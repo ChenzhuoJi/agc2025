@@ -1,0 +1,27 @@
+{
+    // === Python interpreter & env ===
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",   // Windows 下
+    "python.venvPath": "${workspaceFolder}/.venv",
+
+    // === PATH & Import Settings ===
+    "python.envFile": "${workspaceFolder}/.env",
+    "terminal.integrated.env.windows": {
+        "PYTHONPATH": "${workspaceFolder}"
+    },
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/src"
+    ],
+
+    // === Formatting ===
+    "editor.formatOnSave": true,
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter"
+    },
+    
+    // === Code linting ===
+    "python.linting.enabled": true,
+    "python.linting.pylintEnabled": true,
+
+    // === Jupyter Integration ===
+    "jupyter.notebookFileRoot": "${workspaceFolder}"
+}

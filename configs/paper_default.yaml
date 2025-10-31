@@ -1,0 +1,8 @@
+# 论文默认参数配置（µ₁=..., µ₂=..., max_iter=...）
+default:
+  mu1: 1.0
+  mu2: 2.0
+  max_iter: 300
+  theta: 0.5
+  p: 2
+  random_state: 42
