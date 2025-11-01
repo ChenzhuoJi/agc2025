@@ -6,7 +6,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from src.evalutor import Evaluator
+from src.evaluator import Evaluator
 from src.helpers import paramsManager, dataStorageManager
 from src.ml_jnmf import ML_JNMF
 
@@ -29,6 +29,8 @@ class Experiment:
         self.metrices = None
         self.pred_method = None
         self.sample_size = sample_size
+
+        self.model = ML_JNMF(mu1,mu2)
         if p is None:
             self.p = 2
         else:
@@ -93,19 +95,20 @@ class Experiment:
         self.targets = data["targets"]
         self.r = len(np.unique(self.targets))
         # 返回结构层、属性层和交互层矩阵
-        return layer_structure, layer_arttribute, layer_inter
+        return layer_arttribute, layer_structure, layer_inter
 
-    def run(self, pred_method, lamb=0.5):
-        model = ML_JNMF(self.mu1, self.mu2)
+    def run(self, pred_method, lamb=0.5, write_log = False):
         la, ls, li = self.load_data()
 
         self.pred_method = pred_method
-        self.cluster_labels = model.fit_predict(
+        self.cluster_labels = self.model.fit_predict(
             la, ls, li, self.r, self.pred_method, lamb
         )
-        self.is_early_stopped = model.is_early_stopped
-        self.final_loss = model.final_loss
+        self.is_early_stopped = self.model.is_early_stopped
+        self.final_loss = self.model.final_loss 
         self.evaluate()
+        if write_log:
+            self.write_experiment_log()
         return self
 
     def evaluate(self):
@@ -115,7 +118,6 @@ class Experiment:
         self.metrices = eva.get_all_metrics()
 
     def write_experiment_log(self):
-
         log = {
             "dataname": self.dataname,
             "r": self.r,
@@ -199,20 +201,20 @@ class searchExperiment:
                 "final_loss",
                 "is_early_stopped",
                 "predict_method",
-                "Accuracy",
-                "Jaccard_Coefficient",
-                "Fowlkes_Mallows_Index",
-                "Rand_Index",
-                "Adjusted_Rand_Index",
-                "Normalized_MI",
-                "Homogeneity",
-                "Completeness",
-                "V-Measure",
-                "F1_Score",
-                "SS",
-                "SD",
-                "DS",
-                "DD",
+                "ACC",  # 准确率
+                "JC",  # Jaccard 系数
+                "FMI",  # Fowlkes-Mallows 指数
+                "RI",  # Rand 指数
+                "ARI",  # 调整后的 Rand 指数，0表示完全随机
+                "NMI",  # 归一化互信息
+                "HOMO",  # 同质性
+                "COMP",  # 完整性
+                "VM",  # V-measure
+                "F1",  # F1 分数
+                "SS",  # 预测与真实均为正的样本对数
+                "SD",  # 预测为正而真实为负的样本对数
+                "DS",  # 预测为负而真实为正的样本对数
+                "DD",  # 预测与真实均为负的样本对数
             ]
         )
         df.to_csv(self.output, index=False)
@@ -238,22 +240,8 @@ class searchExperiment:
                             "final_loss": epr.final_loss,
                             "is_early_stopped": epr.is_early_stopped,
                             "predict_method": pred_method,
-                            "Accuracy": epr.metrices["Accuracy"],
-                            "Jaccard_Coefficient": epr.metrices["Jaccard_Coefficient"],
-                            "Fowlkes_Mallows_Index": epr.metrices[
-                                "Fowlkes_Mallows_Index"
-                            ],
-                            "Rand_Index": epr.metrices["Rand_Index"],
-                            "Adjusted_Rand_Index": epr.metrices["Adjusted_Rand_Index"],
-                            "Normalized_MI": epr.metrices["Normalized_MI"],
-                            "Homogeneity": epr.metrices["Homogeneity"],
-                            "Completeness": epr.metrices["Completeness"],
-                            "V-Measure": epr.metrices["V-Measure"],
-                            "F1_Score": epr.metrices["F1_Score"],
-                            "SS": epr.metrices["SS"],
-                            "SD": epr.metrices["SD"],
-                            "DS": epr.metrices["DS"],
-                            "DD": epr.metrices["DD"],
                         }
+                        res.update(epr.metrices)
+                        
                         df_new = pd.DataFrame([res])
                         df_new.to_csv(self.output, mode="a", header=False, index=False)

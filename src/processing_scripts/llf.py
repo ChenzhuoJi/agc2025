@@ -1,12 +1,11 @@
 import os
 
-from data.processor import feture_preprocess, edge_preprocess, high_order, get_data_path
+from src.processor import feature_preprocess, edge_preprocess, high_order
 
 import pandas as pd
 import numpy as np
 
 data_dir_name = "LLF/"
-raw_data_dir, processed_data_dir, interim_data_dir = get_data_path(data_dir_name)
 
 ml_edges = pd.read_csv(
     raw_data_dir + "Lazega-Law-Firm_multiplex.edges", sep=" ", header=None

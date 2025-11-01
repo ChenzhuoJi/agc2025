@@ -4,7 +4,7 @@ from sklearn.decomposition._nmf import _initialize_nmf
 from sklearn.cluster import KMeans
 from rich.console import Console
 
-from src.helpers import compute_communitude_metric
+from src.helpers import compute_communitude_metric,create_mapping
 
 
 class EarlyStopping:
@@ -58,6 +58,62 @@ class ConvergenceChecker:
         self.is_converged = False
 
 
+class lossTracker:
+    def __init__(self):
+        self.history = {
+            "total_loss": [],
+            "atrributes_layer_loss": [],
+            "structure_layer_loss": [],
+            "inter_layer_loss": [],
+            "pairwise_similarity_loss": [],
+            "intra_layer_loss": [],
+        }
+
+    def step(
+        self,
+        current_total_loss,
+        current_attributes_layer_loss,
+        current_structure_layer_loss,
+        current_intra_loss,
+        current_inter_loss,
+        current_sim_loss,
+    ):
+        self.history["total_loss"].append(current_total_loss)
+        self.history["atrributes_layer_loss"].append(current_attributes_layer_loss)
+        self.history["structure_layer_loss"].append(current_structure_layer_loss)
+        self.history["inter_layer_loss"].append(current_inter_loss)
+        self.history["intra_layer_loss"].append(current_intra_loss)
+        self.history["pairwise_similarity_loss"].append(current_sim_loss)
+
+    def reset(self):
+        self.history = {
+            "total_loss": [],
+            "atrributes_layer_loss": [],
+            "structure_layer_loss": [],
+            "intra_layer_loss": [],
+            "inter_layer_loss": [],
+            "pairwise_similarity_loss": [],
+        }
+
+    def plot_loss(self):
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(12, 7))
+        # del self.history["atrributes_layer_loss"]
+        # del self.history["structure_layer_loss"]
+        for key, values in self.history.items():
+            plt.plot(values, label=key)
+        plt.xlabel("Iteration")
+        plt.ylabel("Loss")
+        plt.legend()
+        plt.show()
+    
+    def to_dataframe(self):
+        return pd.DataFrame(self.history)
+    
+    def to_csv(self, filename="loss_history.csv"):
+        self.to_dataframe().to_csv(filename, index=False)
+
+
 class ML_JNMF:
     """
     Core implementation of Multi-Level Joint Non-negative Matrix Factorization (ML-JNMF).
@@ -89,16 +145,17 @@ class ML_JNMF:
         self.max_iter = max_iter
         self.tol = tol
         self.random_state = random_state
+        # 辅助工具
         self.early_stopper = EarlyStopping(patience=patience, min_delta=min_delta)
         self.convergence_checker = ConvergenceChecker(
             patience=patience,
         )
+        self.loss_tracker = lossTracker()
         # 模型的结果
         self.U1, self.U2, self.B1, self.B2, self.S12 = [None] * 5
         self.loss_history = []
         self.final_loss = None
         self.is_early_stopped = False
-
 
     def _initialize(self, A1, A2, A12, r):
         """Initialize U1, U2, B1, B2, S12 using NNDSVDAR for stability."""
@@ -134,25 +191,57 @@ class ML_JNMF:
             return np.sum(np.sqrt(np.sum(X**2, axis=1)))
 
         # -------- Intra loss (use L2,1 norm, no square) --------
-        intra_loss = l21_norm(A1 - U1 @ U1.T) + l21_norm(A2 - U2 @ U2.T)
+        attributes_layer_loss = l21_norm(A1 - U1 @ U1.T)  # 实验分析部分
+        structure_layer_loss = l21_norm(A2 - U2 @ U2.T)
 
+        intra_loss = attributes_layer_loss + structure_layer_loss
         # -------- Inter loss (use L2,1 norm, no square) --------
         inter_loss = self.mu1 * l21_norm(A12 - B1 @ S12 @ B2.T)
 
-        # -------- Sim loss (still Frobenius norm squared) --------
+        # -------- Pairwise similarity loss (Frobenius norm squared) --------
         sim_loss = self.mu2 * (
             np.linalg.norm(U1 @ U1.T - B1 @ B1.T, "fro") ** 2
             + np.linalg.norm(U2 @ U2.T - B2 @ B2.T, "fro") ** 2
         )
 
+        # -------- Total loss --------
         total_loss = intra_loss + inter_loss + sim_loss
+
+        self.loss_tracker.step(
+            total_loss,
+            attributes_layer_loss,
+            structure_layer_loss,
+            intra_loss,
+            inter_loss,
+            sim_loss,
+        ) # 暂时分析的代码
+
+        # -------- 检查异常值（nndsvd初始化遇见全0列，即死列，会导致初始化的矩阵有nan值） --------
         if np.isnan(total_loss) or np.isinf(total_loss):
             print("⚠️ Loss NaN detected")
-            print("A1:", np.isnan(A1).any(), "A2:", np.isnan(A2).any(), "A12:", np.isnan(A12).any())
+            print(
+                "A1:",
+                np.isnan(A1).any(),
+                "A2:",
+                np.isnan(A2).any(),
+                "A12:",
+                np.isnan(A12).any(),
+            )
             print("U1:", np.isnan(U1).any(), "U2:", np.isnan(U2).any())
-            print("B1:", np.isnan(B1).any(), "B2:", np.isnan(B2).any(), "S12:", np.isnan(S12).any())
-            print("Any Inf:", np.isinf(U1).any() or np.isinf(U2).any() or np.isinf(B1).any())
+            print(
+                "B1:",
+                np.isnan(B1).any(),
+                "B2:",
+                np.isnan(B2).any(),
+                "S12:",
+                np.isnan(S12).any(),
+            )
+            print(
+                "Any Inf:",
+                np.isinf(U1).any() or np.isinf(U2).any() or np.isinf(B1).any(),
+            )
             raise ValueError("NaN detected in loss computation")
+        
         return total_loss
 
     def _update(self, A1, A2, A12, U1, U2, B1, B2, S12, eps=1e-10):
@@ -282,6 +371,7 @@ class ML_JNMF:
         best_params = None
         self.early_stopper.reset()
         self.convergence_checker.reset()
+        self.loss_tracker.reset()
 
         for it in range(self.max_iter):
             # 计算当前 loss
@@ -338,14 +428,14 @@ class ML_JNMF:
             self.final_loss = best_loss
             console.print(
                 f"[End] iteration={it+1}, loss={loss:.4f}",
-                style="bold red",
+                style="bold blue",
             )
         return self
 
     def predict(self, r, pred_method, lamb=None):
         """
         基于训练好的模型参数预测社区结构
-        
+
         参数:
         r: int - 社区数量/聚类数目
         pred_method: str - 预测方法，可选值包括 'kmeans' 和 'laplace'
@@ -402,7 +492,10 @@ class ML_JNMF:
         df1.insert(0, "node_id", range(len(final_community_1)))
         df2 = pd.DataFrame(final_community_2, columns=["type", "community_id"])
         df2.insert(0, "node_id", range(len(final_community_2)))
-        return df1, df2
+        df1["community_id"] = df1.apply(create_mapping, axis=1)
+        df2["community_id"] = df2.apply(create_mapping, axis=1)
+
+        return df1["community_id"]
 
     def fit_predict(
         self,

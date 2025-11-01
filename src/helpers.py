@@ -170,3 +170,10 @@ def compute_communitude_metric(A, labels, axis=0):
         results[ck] = 0.0 if denominator == 0 else numerator / denominator
 
     return results
+
+def create_mapping(row):
+    if row["type"] == "intra":
+        return 100 + row["community_id"]
+    else:
+        return 200 + row["community_id"]
+    

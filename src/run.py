@@ -3,7 +3,7 @@ import os
 import numpy as np
 import pandas as pd
 
-from evalutor import Evaluator
+from evaluator import Evaluator
 from experiment import Experiment, testExperiment, searchExperiment
 from ml_jnmf import ML_JNMF
 
