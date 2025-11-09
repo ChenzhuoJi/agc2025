@@ -24,6 +24,6 @@ results/
 *.gz
 .quicksearch/
 
-expriment_results_analysis/
-experiments_script/
-processing_script/
+src/experiment_results_analysis/
+src/experiment_scripts/
+src/processing_scripts/
