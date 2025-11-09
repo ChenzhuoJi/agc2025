@@ -23,3 +23,7 @@ results/
 *.tar
 *.gz
 .quicksearch/
+
+expriment_results_analysis/
+experiments_script/
+processing_script/
