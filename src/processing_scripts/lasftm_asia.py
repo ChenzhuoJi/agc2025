@@ -1,57 +1,38 @@
 import json
-import pandas as pd
-from scipy.sparse import coo_matrix
-import datetime
-from src.processor import GraphProcessingManager
 import os
-# ----------------edges------------------
-edges = pd.read_csv(r"data\raw\lasftm_asia\lastfm_asia_edges.csv").to_numpy()
-# ----------------features------------------
-with open(r"data\raw\lasftm_asia\lastfm_asia_features.json", "r") as f:
-    data = json.load(f)
+import time
 
-ids = list(data.keys())
+import pandas as pd
 
-all_features = set()
-for features in data.values():
-    all_features.update(features)
+from src.processor import GraphProcessingManager, json_to_features,edge_preprocess
+from src.helpers import GraphAnalysis as ga
 
-feature_to_idx = {feature: idx for idx, feature in enumerate(all_features)}
-row_indices = []
-col_indices = []
-for row_idx, (id_, features) in enumerate(data.items()):
-    for feature in features:
-        col_idx = feature_to_idx[feature]
-        row_indices.append(row_idx)
-        col_indices.append(col_idx)
 
-# 假设 ids、row_indices、col_indices、all_features、edges 已经定义
-data_values = [1] * len(row_indices)
-n_row = len(ids)
-n_col = len(all_features)
+data_name = "lasftm_asia"
+data_dir = os.path.join("data", "raw", data_name)
 
-# 构造稀疏矩阵并转为稠密特征矩阵
-X = coo_matrix((data_values, (row_indices, col_indices)), shape=(n_row, n_col))
-features = X.toarray()
+edges_file = os.path.join(data_dir, "lastfm_asia_edges.csv")
+features_json_file = os.path.join(data_dir, "lastfm_asia_features.json")
+targets_file = os.path.join(data_dir, "lastfm_asia_target.csv")
 
-# ---------------- 目标加载 ----------------
-target_path = os.path.join("data", "raw", "lasftm_asia", "lastfm_asia_target.csv")
-targets = pd.read_csv(target_path)["target"].to_numpy()
+edges = pd.read_csv(edges_file)
+edges.columns = ['node_1','node_2']
+features = json_to_features(features_json_file)
+targets = pd.read_csv(targets_file)["target"].to_numpy()
+edges.to_csv("data/graphs/lasftm_asia.edges", index=False)
 
-# ---------------- 图数据处理 ----------------
-print("正在执行图数据预处理...")
+features.to_csv("data/graphs/lasftm_asia.features", index=False)
+# adjacency_matrix, node_to_index = edge_preprocess(edges)
+# print("正在进行分析")
+# graph_analysis = ga(adjacency_matrix, list(targets))
+# graph_analysis.comprehensive_analysis()
 
-sample_size = 100
-# 初始化图数据处理器
-manager = GraphProcessingManager("lasftm_asia")
+# start_time = time.time()
+# gpm = GraphProcessingManager(data_name)
+# sample_size = 500
+# print("正在进行处理")
+# gpm.grid_search(edges, features, targets, sample_size=sample_size, overwrite=True)
 
-# 执行参数网格搜索
-manager.grid_search(edges, features, targets, sample_size=sample_size, overwrite=True)
-
-# ---------------- 任务完成标记 ----------------
-done_file = os.path.join(manager.storage_manager.intermediate_dir, "done.txt")
-os.makedirs(os.path.dirname(done_file), exist_ok=True)
-with open(done_file, "w", encoding="utf-8") as f:
-    f.write(datetime.datetime.now().strftime("%Y%m%d_%H%M"))
-
-print(f"[Done] 数据处理完成，已写入标记：{done_file}")
+# print("已完成网格搜索")
+# end_time = time.time()
+# print(f"处理总耗时: {end_time - start_time} 秒, sample_size={sample_size} ")

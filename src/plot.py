@@ -1,16 +1,16 @@
 import networkx as nx
 import matplotlib.pyplot as plt
 import numpy as np
-def graph_statistics(adj_matrix, plot=True):
+def graph_statistics(adj, plot=True):
     """
     Display statistical features of a graph given its adjacency matrix.
 
     Args:
-        adj_matrix (numpy.ndarray): Adjacency matrix (n x n)
+        adj (numpy.ndarray): Adjacency matrix (n x n)
         plot (bool): Whether to show degree distribution plot
     """
     # 转成 NetworkX 图
-    G = nx.from_numpy_array(adj_matrix)
+    G = nx.from_numpy_array(adj)
     n = G.number_of_nodes()
     m = G.number_of_edges()
 

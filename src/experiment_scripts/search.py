@@ -1,4 +1,4 @@
 from src.experiment import Experiment, testExperiment, searchExperiment
 
-epr = searchExperiment("lasftm_asia", 100)
-epr.run(pred_method=None)
+epr = searchExperiment("citeseer",sample_size=None)
+epr.run(pred_method="commutitude")

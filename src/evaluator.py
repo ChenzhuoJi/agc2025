@@ -11,9 +11,9 @@ from sklearn.metrics import (
     adjusted_rand_score,
     normalized_mutual_info_score,
     fowlkes_mallows_score,
-    jaccard_score,
     homogeneity_completeness_v_measure,
 )
+from sklearn.preprocessing import LabelEncoder
 from scipy.optimize import linear_sum_assignment
 
 
@@ -24,11 +24,11 @@ class Evaluator:
         """
         self.cluster_labels = np.array(cluster_labels)
         self.reference_labels = np.array(reference_labels)
+
         if len(self.cluster_labels) != len(self.reference_labels):
             raise ValueError("聚类结果与参考标签长度必须一致")
-
+        
         self.m = len(self.cluster_labels)
-
         # 预计算簇集合
         self.pred_clusters = {
             label: set(np.where(self.cluster_labels == label)[0])
