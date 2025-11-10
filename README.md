@@ -1,73 +1,103 @@
-## 聚类评估指标
+# agc2025
 
-当然可以，以下是将您提供的两段英文文本翻译成中文的结果：
+> 本项目基于 Python，采用 [uv](https://github.com/astral-sh/uv) 进行依赖管理，支持本地 `.venv` 虚拟环境。请根据以下指引配置和运行本项目。
 
-第一段：
-当社区结构已知时，选择归一化互信息（NMI）[47]和准确率作为度量。具体来说，我们设 $ C^* $ 和 $ C $ 分别为真实和获得的社区结构。构建混淆矩阵 $ N \in \mathbb{R}^{|C^*| \times |C|} $，其中 $ n_{ij} $ 表示 $ C_i^* $ 和 $ C_j $ 之间重叠顶点的数量，NMI 定义为
+---
 
-$$
-NMI(\zeta^*, \zeta) = \frac{-2 \sum_{i=1}^{|C^*|} \sum_{j=1}^{|C|} N_{ij} \log \frac{N_{ij} N}{N_i N_j}}{\sum_{i=1}^{|C^*|} N_i \log \frac{N_i}{N} + \sum_{j=1}^{|C|} N_j \log \frac{N_j}{N}}.
-$$
+## 环境准备
 
-召回率衡量 $ C_i^* $ 中被 $ C_j $ 覆盖的顶点的百分比，即，
+1. **检查 Python 版本**本项目建议使用与 `.python-version` 文件指定一致的 Python 版本（例如 Python 3.11）。检查你的 Python 版本：
 
-$$
-R(C_i^*, C_j) = \frac{|C_i^* \cap C_j|}{|C_i^*|}.
-$$
+   ```bash
+   python --version
+   ```
+2. **创建虚拟环境**推荐使用 `.venv` 作为虚拟环境目录。
 
-准确率是 $ C_j $ 中与 $ C_i^* $ 重叠的顶点的百分比，即，
+   使用 venv（Python 3.3+）:
 
-$$
-P(C_i^*, C_j) = \frac{|C_i^* \cap C_j|}{|C_j|}.
-$$
+   ```bash
+   python -m venv .venv
+   ```
 
-F-score [48] 定义为
+   或使用 virtualenv（提前 `pip install virtualenv`）:
 
-$$
-F1(C^*, C) = \sum_{i=1} \sum_{j=1} 2 \cdot \frac{P(C_i^*, C_j) \cdot R(C_i^*, C_j)}{P(C_i^*, C_j) + R(C_i^*, C_j)}.
-$$
+   ```bash
+   virtualenv .venv
+   ```
 
-ARI 定义为 [49]
+   激活虚拟环境：
 
-$$
-ARI(C^*, C) = \frac{\sum_{e,t} \binom{m_{et}}{2} - \left[ \sum_{e} \binom{m_e}{2} \sum_{t} \binom{m_t}{2} \right] / \binom{m}{2}}{\frac{1}{2} \left[ \sum_{e} \binom{m_e}{2} + \sum_{t} \binom{m_t}{2} \right] - \left[ \sum_{e} \binom{m_e}{2} \sum_{t} \binom{m_t}{2} \right] / \binom{m}{2}},
-$$
+   - **Windows**:
+     ```bash
+     .\.venv\Scripts\activate
+     ```
+   - **macOS/Linux**:
+     ```bash
+     source .venv/bin/activate
+     ```
+3. **安装项目依赖**本项目推荐使用 uv 管理依赖。安装方法如下（任选其一）：
 
-其中 $ m $ 是节点总数；$ m_e $ 和 $ m_t $ 分别是估计的簇 $ e $ 和真实簇 $ t $ 中的节点数。$ m_{et} $ 是估计簇 $ e $ 和真实簇 $ t $ 共享的节点数。ARI 的范围是0到1，其中1表示估计的簇与真实簇完全相同，而0表示两个簇完全不同。
+   - 推荐方式（根据 `pyproject.toml` 和 `uv.lock` 安装锁定的依赖）:
 
-第二段：
-设 $ \omega_i $ 和 $ c_i $ 分别为簇标签和类别标签。准确率定义为
+     ```bash
+     uv sync
+     ```
+   - 或仅安装 `pyproject.toml` 里的依赖：
 
-$$
-Accuracy = \frac{\sum_{i=1}^{n} \delta(c_i, \text{map}(\omega_i))}{n}
-$$
+     ```bash
+     uv pip install -e .
+     ```
+   - 如未安装 uv，可通过 pip 安装 uv:
 
-其中 $ \delta(a, b) = 1 $ 当 $ a = b $ 时，否则为0，$ \text{map}(\omega_i) $ 是将簇标签映射到类别标签的置换函数。最佳映射可以通过Kuhn-Munkres算法[50]获得。当社区结构未知时，选择平均密度和社区的关联作为参考文献[26]。
+     ```bash
+     pip install uv
+     ```
+4. **验证依赖安装**
 
-- 在算法收敛后，通过算法1的步骤9-15检测到一组内层和跨层社区。特别地，基础矩阵中每一行的最大项表示每个节点的社区分配。在此步骤结束时，每个节点同时被分配到内层和跨层社区。
-- 在步骤10中，使用检测到的社区的共动度指标计算检测到的社区的质量[60]，[61]。社区 \( C_k \) 的共动度是相对于超邻接矩阵计算的，如下所示：
+   ```bash
+   pip list
+   ```
 
-$$
-Comm(C_k) = \frac{\frac{E^{C_k}_{intra}}{E} - \left(\frac{E^{C_k}_{intra} + E^{C_k}_{inter}}{2E}\right)^2}{\left(\frac{E^{C_k}_{intra} + E^{C_k}_{inter}}{2E}\right)^2(1 - \left(\frac{E^{C_k}_{intra} + E^{C_k}_{inter}}{2E}\right)^2)}
-$$
+   应显示项目所需依赖。
 
-其中 \( E^{C_k}_{intra} \) 是连接社区 \( C_k \) 内所有节点的边的总和，\( E^{C_k}_{inter} \) 是连接社区 \( C_k \) 内节点到其他社区节点的边的总和，\( 2E \) 是超邻接矩阵的总边权重。共动度指标的上限为1。
+---
 
-- 在算法1的步骤11中，根据其共动度值以降序排列检测到的社区，以确定最佳社区集。在提出的方法中，每个节点可以属于内层或跨层社区。因此，比较节点所属的内层和跨层社区的共动度值，并选择值较高的社区。
+## 快速上手与运行
 
-| 指标名称                                      | 含义                                                               | 取值范围 | 趋势说明                                   |
-| --------------------------------------------- | ------------------------------------------------------------------ | -------- | ------------------------------------------ |
-| **Accuracy（准确率）**                  | 聚类标签与真实标签的匹配比例（需要对聚类标签重新排列以最大化匹配） | 0 ～ 1   | 越大越好（1 表示完全正确分类）             |
-| **Jaccard Coefficient（杰卡德系数）**   | 真实同类样本对与预测同类样本对的交集占并集的比例                   | 0 ～ 1   | 越大越好（1 表示完全一致）                 |
-| **Fowlkes–Mallows Index (FMI)**        | 聚类的精确率与召回率的几何平均：FMI = √(Precision × Recall)      | 0 ～ 1   | 越大越好                                   |
-| **Rand Index (RI)**                     | 样本对分类结果一致（同类或异类）的比例                             | 0 ～ 1   | 越大越好                                   |
-| **Adjusted Rand Index (ARI)**           | 对 Rand Index 进行随机调整，消除随机聚类的影响                     | -1 ～ 1  | 越大越好（1 表示完全一致，0 表示随机结果） |
-| **Normalized Mutual Information (NMI)** | 聚类结果与真实标签的互信息，归一化后反映信息共享程度               | 0 ～ 1   | 越大越好                                   |
-| **Homogeneity（同质性）**               | 每个聚类只包含单一类别样本的程度                                   | 0 ～ 1   | 越大越好                                   |
-| **Completeness（完整性）**              | 同一类别的样本是否被归到同一个聚类中                               | 0 ～ 1   | 越大越好                                   |
-| **V-Measure**                           | Homogeneity 与 Completeness 的调和平均                             | 0 ～ 1   | 越大越好                                   |
-| **F1 Score（F1分数）**                  | 马老师论文中定义                                                   | > 0      | 越大越好                                   |
+1. **运行实验脚本或主程序**
 
-| p | theta | mu1 | mu2 | sample_size | predict_method | ACC   | JC     | FMI    | RI     | ARI    | NMI    | HOMO   | COMP   | VM     | F1      |
-| - | ----- | --- | --- | ----------- | -------------- | ----- | ------ | ------ | ------ | ------ | ------ | ------ | ------ | ------ | ------- |
-| 4 | 2     | 4   | 0.5 | 200         | commutitude    | 0.715 | 0.4457 | 0.6185 | 0.9264 | 0.5762 | 0.7043 | 0.7434 | 0.6691 | 0.7043 | 13.3322 |
+   ```bash
+   python experiment_script.py 数据集名 预测方法
+   ```
+
+   - 例如：
+     ```bash
+     python experiment_script.py cora lambda
+     ```
+   - 其中 `cora` 是数据集名称（如 `cora`、`citeseer` 等），`lambda` 是预测方法（如 `lambda`、`communitude` 等）。
+2. **可选参数和扩展配置**
+
+   你可以通过命令行传递自定义参数。例如：
+
+   ```bash
+   python experiment_script.py cora lambda --order 6 --decay 0.8 --interWeight 4 --pairwiseWeight 3
+   ```
+
+   参数作用请参考源代码/脚本说明。
+
+---
+
+## 实验结果与日志
+
+- 实验运行结束后，日志通常保存在 `results/logs/` 下，文件名包含数据集与时间戳。例如：
+  ```
+  results/logs/cora_20231104_1430.json
+  ```
+- 通过此日志文件可以分析实验结果。
+
+---
+
+## 项目地址与维护者
+
+- 作者主页: [ChenzhuoJi](https://github.com/ChenzhuoJi)
+- 项目地址: [https://github.com/ChenzhuoJi/agc2025](https://github.com/ChenzhuoJi/agc2025)
