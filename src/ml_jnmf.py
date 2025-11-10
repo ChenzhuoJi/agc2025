@@ -600,7 +600,7 @@ class ML_JNMF:
             r (int): 潜在特征维度，即社区数量。
             pred_method (Literal["lambda", "communitude"]): 预测方法，可选值包括 'lambda' 和 'communitude'。
             lamb (float, 可选): 用于加权组合U1和U2的参数，范围在[0,1]之间，默认值为None。
-            silence (bool, 可选): 是否在训练过程中静默打印日志，默认值为True。
+            silent (bool, 可选): 是否在训练过程中静默打印日志，默认值为True。
 
         返回值:
             Union[np.ndarray, tuple[np.ndarray, np.ndarray]]:

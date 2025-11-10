@@ -16,6 +16,19 @@ from sklearn.metrics import (
 from sklearn.preprocessing import LabelEncoder
 from scipy.optimize import linear_sum_assignment
 
+class internalEvaluator:
+    def __init__(self, cluster_labels):
+        """
+        聚类评估类：比较聚类结果和参考标签的外部一致性指标
+        """
+        self.cluster_labels = np.array(cluster_labels)
+        
+        self.m = len(self.cluster_labels)
+        # 预计算簇集合
+        self.pred_clusters = {
+            label: set(np.where(self.cluster_labels == label)[0])
+            for label in np.unique(self.cluster_labels)
+        }
 
 class Evaluator:
     def __init__(self, cluster_labels, reference_labels):
@@ -23,6 +36,7 @@ class Evaluator:
         聚类评估类：比较聚类结果和参考标签的外部一致性指标
         """
         self.cluster_labels = np.array(cluster_labels)
+        
         self.reference_labels = np.array(reference_labels)
 
         if len(self.cluster_labels) != len(self.reference_labels):
