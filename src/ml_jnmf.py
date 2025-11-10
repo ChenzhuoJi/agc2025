@@ -197,6 +197,7 @@ class ML_JNMF:
         self.loss_history = []  # 损失历史记录列表
         self.final_loss = None  # 最终损失值
         self.is_converged = False  # 模型是否收敛的标志
+        self.early_stopping = False  # 是否触发早停机制的标志
         self.community = None  # 社区划分结果
 
     def matrixInit(
@@ -483,7 +484,8 @@ class ML_JNMF:
             if self.early_stopper.step(loss, best_loss):
                 # console.print(f"loss={loss:.4f}, best_loss={best_loss:.4f}")
                 self.U1, self.U2, self.B1, self.B2, self.S12 = best_params
-                self.isConvergence = False
+                self.is_converged = False
+                self.early_stopping = True
                 self.final_loss = best_loss
                 t_fit = time.time() - t_fit
                 console.print(

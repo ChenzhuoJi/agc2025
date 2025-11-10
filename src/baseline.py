@@ -49,7 +49,6 @@ def nmf_clustering(X, k):
     return labels
 
 if __name__ == "__main__":
-    # 示例用法
     X = feature_process("cora")
     Y = edge_process("cora")
     k = 7

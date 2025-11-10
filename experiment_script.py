@@ -40,6 +40,8 @@ def preprocess(dataname: str, preprocessParams: dict = preprocessParameters):
     la = feature_process(dataname)
 
     ls = high_order(edge_process(dataname), order, decay)
+    # if isinstance(ls, csr_matrix):
+    #     ls = ls.toarray() 似乎不是很好，指标低了一点
 
     la /= np.max(la)
     ls /= np.max(ls)
@@ -87,7 +89,7 @@ def experiment(
 
     # 将预测结果和真实目标值合并为DataFrame（便于后续分析）
     pred_and_targets = pd.DataFrame(
-        np.concatenate((pred, targets.reshape(-1, 1)), axis=1),
+        np.concatenate((pred.reshape(-1, 1), targets.reshape(-1, 1)), axis=1),
         columns=["predict", "target"],
     )
 
@@ -98,11 +100,12 @@ def experiment(
     log = {
         "dataname": dataname,  # 数据集名称
         "r": r,  # 低维空间维度
-        "size": la.shape[0],  # 数据规模（节点数量）
+        "size": model.size,  # 数据规模（节点数量）
         "time": EXPERIEMENT_TIME,  # 实验时间戳
         "compute_time": COMPUTE_TIME,  # 总计算时间（秒）
         "final_loss": model.final_loss,  # 模型最终损失值
         "is_converged": model.is_converged,  # 模型是否收敛
+        "early_stopping": model.early_stopping,  # 是否触发早停机制
         "evalution": metrics,  # 评估指标结果
         "predict_method": pred_method,  # 使用的预测方法
     }
