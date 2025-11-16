@@ -11,22 +11,24 @@ import os
 import json
 import joblib
 import time
-
+import shutil
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import sparse
 import networkx as nx
-from collections import Counter
+from sklearn.decomposition import NMF
+from collections import Counter, defaultdict
 
 import warnings
 
 warnings.filterwarnings("ignore")
 
 # 设置matplotlib中文字体
-plt.rcParams['font.sans-serif'] = ['SimHei']  # 指定默认字体
-plt.rcParams['axes.unicode_minus'] = False  # 解决保存图像时负号'-'显示为方块的问题
+plt.rcParams["font.sans-serif"] = ["SimHei"]  # 指定默认字体
+plt.rcParams["axes.unicode_minus"] = False  # 解决保存图像时负号'-'显示为方块的问题
+
 
 class GraphAnalysis:
     def __init__(self, adjacency_matrix):
@@ -426,55 +428,390 @@ def create_mapping(row):
         return 200 + row["community_id"]
 
 
-if __name__ == "__main__":
-    from sklearn.decomposition import NMF
+def json2long(json_input_path, long_output_path):
+    """
+    将 JSON {"节点ID": [拥有的属性ID列表]} 转换为长格式。
+    输出格式：每行 "节点ID\t属性ID"。
+    排序方式：首先按属性ID升序，然后按节点ID升序。
 
-    np.random.seed(42)
-    simulated = np.random.randint(0, 2, (10, 10))
-    model = NMF(n_components=4, init="random", random_state=42)
-    U = model.fit_transform(simulated)
-    Vt = model.components_
-    V = Vt.T
-    print(U.shape)  # (10, 4)
-    labels = np.argmax(U, axis=1)  # (10,)
-    unique_labels = np.unique(labels)
-    total_edge_weight = np.sum(simulated)
-    # print(unique_labels)
+    :param json_input_path: 输入的 JSON 文件路径。
+    :param long_output_path: 输出的长格式文件路径。
+    """
+    print(f"[*] 开始转换: {json_input_path} -> {long_output_path}")
+
+    # 1. 读取 JSON 文件
+    try:
+        with open(json_input_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"[!] 错误: 输入文件 '{json_input_path}' 未找到。")
+        return
+    except json.JSONDecodeError:
+        print(f"[!] 错误: 输入文件 '{json_input_path}' 不是有效的 JSON 格式。")
+        return
+
+    # 2. 数据预处理和收集
+    # 创建一个字典，key为属性ID，value为拥有该属性的节点ID列表
+    attr_to_nodes = defaultdict(list)
+
+    all_node_ids = set()
+    all_attr_ids = set()
+
+    for node_id_str, attr_id_list in data.items():
+        node_id_int = int(node_id_str)
+        all_node_ids.add(node_id_int)
+
+        for attr_id in attr_id_list:
+            attr_id_int = int(attr_id)
+            attr_to_nodes[attr_id_int].append(node_id_int)
+            all_attr_ids.add(attr_id_int)
+
+    # 3. 排序
+    # 对所有属性ID进行升序排序
+    sorted_attr_ids = sorted(list(all_attr_ids))
+
+    # 对每个属性对应的节点ID列表进行升序排序
+    for attr_id in sorted_attr_ids:
+        attr_to_nodes[attr_id].sort()
+
+    print(f"[*] 发现 {len(all_node_ids)} 个节点, {len(all_attr_ids)} 个独特属性。")
+
+    # 4. 写入长格式文件
+    total_lines = 0
+    try:
+        with open(long_output_path, "w", encoding="utf-8") as f:
+            # 遍历排序后的属性ID
+            for attr_id in sorted_attr_ids:
+                # 遍历当前属性下排序后的节点ID列表
+                for node_id in attr_to_nodes[attr_id]:
+                    f.write(f"{node_id}\t{attr_id}\n")
+                    total_lines += 1
+        print(
+            f"[✓] 转换成功! 共生成 {total_lines} 条记录，已保存到 '{long_output_path}'"
+        )
+
+    except IOError as e:
+        print(f"[!] 错误: 写入文件 '{long_output_path}' 失败。 {e}")
+
+
+def compute_AS_with_NMF(A, r, random_state=42):
+    """
+    使用非负矩阵分解(NMF)计算给定邻接矩阵(或相似度矩阵)A的非对称惊喜度(Asymmetric Surprise, AS)。
+
+    参数:
+        A (numpy.ndarray): 图的邻接矩阵（或相似度矩阵），形状为(n×n)，其中n是节点数
+        r (int): 设定的要检测的社区数量
+        random_state (int, optional): 随机数生成器的种子，用于确保结果的可重复性，默认为42
+
+    返回:
+        tuple: 包含两个元素的元组
+            - float: 计算得到的非对称惊喜度(AS)值
+            - numpy.ndarray: 每个节点所属的社区标签，形状为(n,)
+
+    算法原理:
+        1. 使用NMF将邻接矩阵分解为两个非负矩阵的乘积，从而获得节点的社区隶属度
+        2. 基于分解结果确定每个节点的社区标签
+        3. 计算实际的社区内边比例与随机分布下的期望社区内边比例
+        4. 使用KL散度计算这两个分布之间的差异，得到非对称惊喜度
+    """
+    # 获取图中节点的数量
+    n = A.shape[0]
+
+    # -------- Step 1: NMF Decomposition --------
+    # 初始化NMF模型，使用NNDSVD(非负双重奇异值分解)作为初始化方法
+    # 设置最大迭代次数为500以确保收敛
+    nmf = NMF(n_components=r, init="nndsvd", random_state=random_state, max_iter=500)
+
+    # 对邻接矩阵A进行NMF分解，得到节点-社区隶属度矩阵U(n×k)
+    U = nmf.fit_transform(A)  # n x k
+
+    # 对每个节点，选择隶属度最大的社区作为其标签
+    labels = np.argmax(U, axis=1)  # 取最大隶属度的社区作为标签
+
+    # -------- Step 2: compute community structure --------
+    # 计算图中边的总数（因为邻接矩阵是对称的，所以需要除以2）
+    E = np.sum(A) / 2  # total number of edges
+
+    # 计算社区内部实际存在的边数
+    E_intra = 0
+    for c in set(labels):
+        # 获取属于当前社区c的所有节点的索引
+        idx = np.where(labels == c)[0]
+        # 提取这些节点组成的子图的邻接矩阵
+        subgraph = A[np.ix_(idx, idx)]
+        # 累加子图中的边数（同样除以2避免重复计算）
+        E_intra += np.sum(subgraph) / 2
+
+    # 计算实际的社区内边比例q
+    q = E_intra / E if E > 0 else 0
+
+    # 计算随机分布下期望的社区内边比例q_exp
+    # 首先计算每个社区的大小
+    sizes = [np.sum(labels == c) for c in set(labels)]
+    # 计算期望的社区内边比例：所有社区可能的内部边数之和除以图中可能的总边数
+    q_exp = sum(s * (s - 1) / 2 for s in sizes) / (n * (n - 1) / 2)
+
+    # 处理边界情况：如果q或q_exp为0或1，则KL散度无法定义，返回0
+    if q in [0, 1] or q_exp in [0, 1]:
+        return 0.0, labels
+
+    # 计算KL散度：衡量实际分布与期望分布之间的差异
+    KL = q * np.log(q / q_exp) + (1 - q) * np.log((1 - q) / (1 - q_exp))
+
+    # 计算非对称惊喜度：KL散度乘以2倍的边数
+    AS = 2 * E * KL
+
+    # 返回计算得到的非对称惊喜度和节点社区标签
+    return AS, labels
+
+
+def standardize_feature_ids(graphs_dir, output_dir="st"):
+    """
+    检测特征ID不连续或不从0开始的文件，并将其标准化（从0开始，连续化）
+
+    Args:
+        graphs_dir (str): graphs目录路径
+        output_dir (str): 输出目录名称，默认为'st'
+
+    Returns:
+        dict: 处理结果
+    """
+    # 创建输出目录
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
     results = {}
-    for ul in unique_labels:
-        rows_in_ul = np.where(labels == ul)[0]
-        # row_in_ul 是 ul 类别的所有行索引(对应节点id)
-        # if ul == unique_labels[0]:
-        #     print(np.where(labels == ul))
-        # print(ul,rows_in_ul)
-        submatrix = simulated[np.ix_(rows_in_ul, list(range(simulated.shape[1])))]
-        # np.ix_ : 用于生成一个二维的索引数组，用于从矩阵中提取子矩阵
-        # 这里的 np.ix_(rows_in_ul, list(range(simulated.shape[1]))) 表示提取 simulated 矩阵中 rows_in_ul 行和所有列的子矩阵
-        # 即提取节点15连接到的点的索引(列索引)
-        # 再用 np.where(submatrix == 1)[1] 找到节点15连接到的点的索引(列索引)
-        # 即节点15连接到的点的索引(列索引) = [15, 22, 24, 31, 32, 34, 37, 40, 42, 44]
-        # 再用 np.where(simulated[rows_in_ul, :] == 1)[1] 找到节点15连接到的点的索引(列索引)
-        # 即节点15连接到的点的索引(列索引) = [15, 22, 24, 31, 32, 34, 37, 40, 42, 44]
-        # 再用 np.where(U[rows_in_ul, :] == 1)[1] 找到节点15连接到的点的索引(列索引)
-        # 即节点15连接到的点的索引(列索引) = [2, 3, 4, 9]
-        # 这里的 np.ix_(rows_in_ul, list(range(U.shape[1]))) 表示提取 U 矩阵中 rows_in_ul 行和所有列的子矩阵
-        # 即提取节点15连接到的点的索引(列索引) = [2, 3, 4, 9]
-        e_intra_ul = np.sum(submatrix)
-        e_inter_ul = np.sum(simulated[rows_in_ul, :]) - e_intra_ul
-        if ul == unique_labels[0]:
-            print(rows_in_ul)  # = [2 3 4 9]
-            print(list(range(simulated.shape[1])))  # = [0, 1, 2, ..., 9]
-            print(np.ix_(rows_in_ul, list(range(simulated.shape[1]))))
-            # (array([[2],
-            #        [3],
-            #        [4],
-            #        [9]]), array([[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]]))
 
-            print(submatrix)  # 索引 rows_in_ul 各行的元素，即节点连接到的点的索引
-            # [[1 0 1 1 1 1 1 1 1 1]
-            #  [0 0 1 1 1 0 1 0 0 0]
-            #  [0 0 1 1 1 1 1 0 1 1]
-            #  [1 1 1 1 1 1 1 1 1 0]]
-            print(np.where(submatrix == 1))  # 找到节点15连接到的点的索引
-            print(np.where(submatrix == 1)[1])  # 找到节点15连接到的点的索引(列索引)
+    # 遍历graphs目录下的所有.features文件
+    for filename in os.listdir(graphs_dir):
+        if filename.endswith(".features"):
+            file_path = os.path.join(graphs_dir, filename)
+
+            try:
+                # 读取.features文件
+                with open(file_path, "r") as f:
+                    features_data = json.load(f)
+
+                # 收集所有特征ID
+                all_feature_ids = set()
+                for node_features in features_data.values():
+                    all_feature_ids.update(node_features)
+
+                # 检查特征ID是否连续且从0开始
+                all_feature_ids = sorted(list(all_feature_ids))
+                expected_ids = list(range(len(all_feature_ids)))
+
+                # 如果特征ID已经是从0开始且连续的，则直接复制文件
+                if all_feature_ids == expected_ids:
+                    # 直接复制文件到st目录
+                    output_file_path = os.path.join(output_dir, filename)
+                    shutil.copy(file_path, output_file_path)
+
+                    # 创建节点ID映射文件（保持不变）
+                    node_mapping = {
+                        node_id: node_id for node_id in features_data.keys()
+                    }
+                    mapping_file_path = os.path.join(
+                        output_dir, filename.replace(".features", ".node_mapping.json")
+                    )
+                    with open(mapping_file_path, "w") as f:
+                        json.dump(node_mapping, f, indent=2)
+
+                    results[filename] = {
+                        "status": "already_standardized",
+                        "original_feature_count": len(all_feature_ids),
+                        "mapping_file": mapping_file_path,
+                    }
+                else:
+                    # 需要标准化特征ID
+                    # 创建特征ID映射（原ID -> 新ID）
+                    feature_id_mapping = {
+                        old_id: new_id for new_id, old_id in enumerate(all_feature_ids)
+                    }
+
+                    # 创建标准化后的数据
+                    standardized_data = {}
+                    node_mapping = {}  # 节点ID映射（如果需要的话）
+
+                    for node_idx, (node_id, node_features) in enumerate(
+                        features_data.items()
+                    ):
+                        # 保持节点ID不变，只标准化特征ID
+                        standardized_features = [
+                            feature_id_mapping[feat_id] for feat_id in node_features
+                        ]
+                        standardized_data[node_id] = standardized_features
+                        node_mapping[node_id] = node_idx  # 如果需要重新编号节点
+
+                    # 保存标准化后的.features文件
+                    output_file_path = os.path.join(output_dir, filename)
+                    with open(output_file_path, "w") as f:
+                        json.dump(standardized_data, f, indent=2)
+
+                    # 保存特征ID映射关系
+                    mapping_info = {
+                        "feature_id_mapping": feature_id_mapping,
+                        "node_mapping": node_mapping,
+                        "original_min_feature_id": (
+                            min(all_feature_ids) if all_feature_ids else None
+                        ),
+                        "original_max_feature_id": (
+                            max(all_feature_ids) if all_feature_ids else None
+                        ),
+                        "new_feature_count": len(all_feature_ids),
+                    }
+
+                    mapping_file_path = os.path.join(
+                        output_dir, filename.replace(".features", ".mapping.json")
+                    )
+                    with open(mapping_file_path, "w") as f:
+                        json.dump(mapping_info, f, indent=2)
+
+                    results[filename] = {
+                        "status": "standardized",
+                        "original_feature_count": len(all_feature_ids),
+                        "new_feature_count": len(all_feature_ids),
+                        "min_feature_id": (
+                            min(all_feature_ids) if all_feature_ids else None
+                        ),
+                        "max_feature_id": (
+                            max(all_feature_ids) if all_feature_ids else None
+                        ),
+                        "output_file": output_file_path,
+                        "mapping_file": mapping_file_path,
+                    }
+
+            except Exception as e:
+                results[filename] = {"status": "error", "error": str(e)}
+
+    return results
+
+
+def determine_community_number(A, max_r=10):
+    """
+    使用非对称惊喜度(AS)指标自动确定图的最优社区数量。
+
+    参数:
+        A (numpy.ndarray): 图的邻接矩阵，形状为(n×n)，其中n是节点数
+        max_r (int, optional): 尝试的最大社区数量，默认值为10
+
+    返回:
+        int: 使AS值最大的最优社区数量
+
+    算法原理:
+        1. 遍历从2到max_r的所有可能社区数量k
+        2. 对每个k值，使用compute_AS_with_NMF计算对应的非对称惊喜度(AS)值
+        3. 找出AS值最大的k值，作为最优社区数量
+
+    注意事项:        - 社区数量通常从2开始尝试，因为单个社区没有划分意义
+        - 当存在多个k值对应相同的最大AS值时，返回第一个出现的k值
+    """
+    # 初始化列表用于存储不同社区数量对应的AS值
+    AS_values = []
+
+    # 遍历从2到max_r的所有可能社区数量k
+    # 2是社区数量的最小有意义值，单个社区无法体现社区划分
+    for k in range(2, max_r + 1):
+        # 计算当前社区数量k对应的非对称惊喜度值
+        # 使用固定的random_state=42确保结果的可重复性
+        AS_values.append(compute_AS_with_NMF(A, k, random_state=42))
+
+    # 找出所有AS值中的最大值
+    max_AS = max(AS_values)
+
+    # 遍历AS值列表，找出第一个等于最大值的索引
+    for index, value in enumerate(AS_values):
+        if value == max_AS:
+            # 将索引转换为对应的社区数量k（索引从0开始，对应k=2）
+            r = index + 2
+            # 返回最优社区数量
+            return r
+
+
+def check_featjson(featdict):
+    # 验证节点id是否从零开始且连续
+    node_ids = sorted(list(int(node_id) for node_id in featdict.keys()))
+    if not all(int(node_id) == i for i, node_id in enumerate(node_ids)):
+        max_id = max(int(node_id) for node_id in node_ids)
+        min_id = min(int(node_id) for node_id in node_ids)
+        print(f"最大节点ID: {max_id}")
+        print(f"最小节点ID: {min_id}")
+        print(f"预期节点数: {max_id - min_id + 1}, 实际节点数: {len(node_ids)}")
+    # 验证属性id是否从零开始且连续
+    all_feat = set()
+    for node, features in featdict.items():
+        all_feat.update(features)
+    all_feat = sorted(list(all_feat))
+    if not all(int(feat_id) == i for i, feat_id in enumerate(all_feat)):
+        print(f"最大属性ID: {max(int(feat_id) for feat_id in all_feat)}")
+        print(f"最小属性ID: {min(int(feat_id) for feat_id in all_feat)}")
+        print(
+            f"预期属性数: {max(int(feat_id) for feat_id in all_feat) - min(int(feat_id) for feat_id in all_feat) + 1}, 实际属性数: {len(all_feat)}"
+        )
+        raise ValueError("Feature IDs must be consecutive integers starting from 0")
+    pass
+
+
+def check_edges(edgesframe):
+    # 验证是否从零开始且连续
+    edges = np.unique(np.array(edgesframe, dtype=int))
+    max_id = max(edges.max(), edges.min())
+    min_id = min(edges.max(), edges.min())
+    if not all(
+        int(node_id) == i for i, node_id in enumerate(range(min_id, max_id + 1))
+    ):
+        raise ValueError("Edge IDs must be consecutive integers starting from 0")
+
+
+def json2featmat(file_path=None):
+    with open(file_path, "r") as f:
+        # 解析JSON文件
+        features_dict = json.load(f)
+
+    # 准备数据结构
+    row_indices = []  # 行索引（节点ID）
+    col_indices = []  # 列索引（特征ID）
+    data = []  # 数据值（这里都是1）
+
+    # 获取所有节点和特征
+    nodes = list(features_dict.keys())
+
+    # 确定最大特征ID
+    max_feature_id = 0
+    for node, features in features_dict.items():
+        if features:
+            current_max = max(features)
+            if current_max > max_feature_id:
+                max_feature_id = current_max
+
+    # 构建稀疏矩阵数据
+    for node_idx, node in enumerate(nodes):
+        for feature_id in features_dict[node]:
+            row_indices.append(node_idx)
+            col_indices.append(feature_id)
+            data.append(1.0)  # 存在特征值为1
+
+    # 创建稀疏矩阵（COO格式）
+    num_nodes = len(nodes)
+    num_features = max_feature_id + 1
+
+    coo = sparse.coo_matrix(
+        (data, (row_indices, col_indices)), shape=(num_nodes, num_features)
+    )
+    csr = coo.tocsr()
+    return csr
+
+
+if __name__ == "__main__":
+    # standardize_feature_ids('stgraphs')
+
+    for file in os.listdir("stgraphs"):
+        if file.endswith(".features"):
+            dataname = file.split(".")[0]
+            with open(f"stgraphs/{file}", "r") as f:
+                print(f"checking {dataname}")
+                features_dict = json.load(f)
+            edgesframe = pd.read_csv(f"stgraphs/{dataname}.edges", header=None)
+            check_edges(edgesframe)
+            check_featjson(features_dict)
+            # json2featmat(f"stgraphs/{file}")

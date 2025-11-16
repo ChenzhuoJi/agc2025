@@ -13,6 +13,59 @@ import pandas as pd
 import scipy.sparse as sp
 from sklearn.metrics import pairwise_distances
 
+import json
+import os
+
+
+def detect_features_format(file_path: str) -> str:
+    """
+    检测.features文件的格式（JSON 或 CSV）
+
+    Args:
+        file_path: 特征文件的完整路径
+
+    Returns:
+        str: 检测结果，"json" 或 "csv"
+
+    Raises:
+        ValueError: 无法识别的文件格式
+    """
+    # 读取文件前3行采样，避免读取大文件时性能问题
+    with open(file_path, "r", encoding="utf-8") as f:
+        sample_lines = []
+        for _ in range(3):
+            line = f.readline().strip()
+            if line:
+                sample_lines.append(line)
+            else:
+                break  # 若提前读到空行，停止采样
+
+    # 1. 检测是否为JSON格式（首行{、末行}，且能成功解析）
+    if (
+        sample_lines
+        and sample_lines[0].startswith("{")
+        and sample_lines[-1].endswith("}")
+    ):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                json.load(f)  # 验证是否为合法JSON
+            return "json"
+        except json.JSONDecodeError:
+            pass  # 解析失败，排除JSON格式
+
+    # 2. 检测是否为CSV格式（包含常见分隔符）
+    common_delimiters = [",", "\t", ";"]  # 支持逗号、制表符、分号分隔
+    for delimiter in common_delimiters:
+        if any(delimiter in line for line in sample_lines):
+            return "csv"
+
+    # 3. 无法识别的格式
+    raise ValueError(
+        f"不支持的.features文件格式！\n"
+        f"文件路径：{file_path}\n"
+        f'支持格式：1. JSON格式（{{"节点id": [特征id列表]}}）；2. CSV格式（行=节点，列=特征）'
+    )
+
 
 def is_consecutive(lst: List[int]) -> bool:
     if not lst:  # 如果列表为空
@@ -56,7 +109,7 @@ def edge_process(
         Union[np.ndarray, sp.csr_matrix]: 构建的邻接矩阵，可以是NumPy稠密数组或SciPy CSR格式的稀疏矩阵
     """
     # 构建边文件路径
-    edges_file = f"data/graphs/{dataname}.edges"
+    edges_file = f"stgraphs/{dataname}.edges"
 
     # 读取边数据文件
     edges = pd.read_csv(edges_file, header=None)
@@ -80,7 +133,6 @@ def edge_process(
     # 根据零元素的密度判断是否需要转换为稀疏矩阵，以节省内存
     if is_sparse_based_on_density(adj, sparsity_threshold):
         adj = sp.csr_matrix(adj)  # 转换为压缩稀疏行(CSR)格式
-        print("邻接矩阵转换为稀疏矩阵")
 
     return adj  # 返回构建的邻接矩阵
 
@@ -102,7 +154,7 @@ def feature_process(
         np.ndarray: 节点间的特征相似度矩阵，形状为[节点数量, 节点数量]
     """
     # 构建特征文件路径
-    features_file = f"data/graphs/{dataname}.features"
+    features_file = f"stgraphs/{dataname}.features"
 
     # 读取特征文件数据
     with open(features_file, "r") as f:
@@ -129,7 +181,6 @@ def feature_process(
     # 根据零元素的密度判断是否需要转换为稀疏矩阵，以节省内存和加速计算
     if is_sparse_based_on_density(features, sparsity_threshold):
         features = sp.csr_matrix(features)  # 转换为压缩稀疏行(CSR)格式
-        print("特征矩阵转换为稀疏矩阵")
 
     # 计算特征相似度矩阵（使用高斯核函数）
     if sp.issparse(features):
@@ -150,8 +201,8 @@ def feature_process(
     # 检查相似度矩阵中的 NaN 和 inf 值，避免后续计算错误
     if np.any(np.isnan(similarity_matrix)) or np.any(np.isinf(similarity_matrix)):
         warnings.warn("相似度矩阵中包含 NaN 或 inf 值！")
-
-    return similarity_matrix  # 返回计算得到的特征相似度矩阵
+    
+    return similarity_matrix
 
 
 def high_order(
@@ -175,16 +226,21 @@ def high_order(
             matrix_power = matrix_power @ term  # 更新矩阵的幂
     if sp.issparse(ho_matrix):
         ho_matrix = ho_matrix.toarray()
+
     return ho_matrix
 
 
 if __name__ == "__main__":
     t = time.time()
-    edge_process("citeseer")
+    edge_process("cora")
     print(f"邻接矩阵处理耗时: {time.time() - t}")
     t = time.time()
-    feature_process("citeseer")
+    la = feature_process("cora")
+    la = high_order(la)
+
+    la /= np.max(la)
     print(f"特征矩阵处理耗时: {time.time() - t}")
     t = time.time()
-    high_order(edge_process("citeseer"))
+    ls = high_order(edge_process("cora"))
+    ls /= np.max(ls)
     print(f"高阶传播矩阵处理耗时: {time.time() - t}")

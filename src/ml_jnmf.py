@@ -7,7 +7,6 @@ from sklearn.decomposition._nmf import _initialize_nmf
 from rich.console import Console
 
 from src.helpers import compute_communitude_metric, create_mapping
-from src.evaluator import Evaluator
 
 
 class EarlyStopping:
@@ -149,9 +148,9 @@ class ML_JNMF:
         li: np.ndarray,
         interWeight: float = 5.0,
         pairwiseWeight: float = 2.0,
-        max_iter: int = 300,
+        max_iter: int = 100,
         convergence_tol: float = 1e-4,
-        convergence_patience: int = 20,
+        convergence_patience: int = 10,
         early_stopping_patience: int = 20,
         early_stopping_min_delta: float = 1e-4,
         random_state: int = 42,
@@ -165,9 +164,9 @@ class ML_JNMF:
             li: np.ndarray - 层间关联矩阵，表示属性层与结构层之间的关联关系
             interWeight: float - 层间损失的权重系数，默认为5.0
             pairwiseWeight: float - 成对相似度损失的权重系数，默认为2.0
-            max_iter: int - 最大迭代次数，默认为300
+            max_iter: int - 最大迭代次数，默认为100
             convergence_tol: float - 收敛阈值，默认为1e-4
-            convergence_patience: int - 收敛检查的耐心值，默认为20
+            convergence_patience: int - 收敛检查的耐心值，默认为10
             early_stopping_patience: int - 早停机制的耐心值，默认为20
             early_stopping_min_delta: float - 早停机制的最小变化量，默认为1e-4
             random_state: int - 随机数种子，用于结果可复现，默认为42
@@ -249,7 +248,7 @@ class ML_JNMF:
         # 返回所有初始化好的矩阵
         return self.U1, self.U2, self.B1, self.B2, self.S12
 
-    def caculateLoss(self) -> float:
+    def calculateLoss(self) -> float:
         """计算多模态联合非负矩阵分解(ML-JNMF)模型的总目标函数损失值。
 
         该方法计算模型的综合损失，包括内部层损失、层间损失和成对相似度损失，
@@ -327,7 +326,7 @@ class ML_JNMF:
 
         return total_loss
 
-    def multipicateUpdate(
+    def multiplicativeUpdate(
         self, eps=1e-10
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """更新U1, U2, B1, B2, S12矩阵，使用乘法更新规则。
@@ -473,13 +472,7 @@ class ML_JNMF:
         for it in range(self.max_iter):
             # 计算当前 loss
             time_start = time.time()
-            loss = self.caculateLoss()
-            if not silent:
-                console.print(
-                    f"[Update] iteration={it+1}, loss={loss:.4f}, best_loss={best_loss:.4f}, computing_time={time.time() - time_start:.4f}s",
-                    style="bold blue",
-                )
-
+            loss = self.calculateLoss()
             self.loss_history.append(loss)
             if self.early_stopper.step(loss, best_loss):
                 # console.print(f"loss={loss:.4f}, best_loss={best_loss:.4f}")
@@ -518,15 +511,21 @@ class ML_JNMF:
                 break
 
             # 更新因子矩阵
-            self.U1, self.U2, self.B1, self.B2, self.S12 = self.multipicateUpdate()
-
+            self.U1, self.U2, self.B1, self.B2, self.S12 = self.multiplicativeUpdate()
+            if not silent:
+                if it % 5 == 0:
+                    console.print(
+                        f"[Update] iteration={it+1}, loss={loss:.4f}, best_loss={best_loss:.4f}, computing_time={time.time() - time_start:.4f}s",
+                        style="blue",
+                    )
+                
         # 如果循环自然结束，也使用最佳参数
         else:
             self.U1, self.U2, self.B1, self.B2, self.S12 = best_params
             self.final_loss = best_loss
             t_fit = time.time() - t_fit
             console.print(
-                f"[End] iteration={it+1}, loss={loss:.4f}, computing_time={t_fit:.4f}s",
+                f"[End] iteration={it+1}, loss={best_loss:.4f}, computing_time={t_fit:.4f}s",
                 style="bold purple",
             )
         return self
@@ -612,29 +611,3 @@ class ML_JNMF:
         self.fit(r, silent)
         self.community = self.predict(r, pred_method, lamb)
         return self.community
-
-    def evaluate(self, target_community: np.ndarray):
-        """
-        评估模型预测的社区结构与目标社区结构的相似度。
-
-        参数:
-            target_community (np.ndarray): 目标社区结构，形状为 (n_samples,)
-
-        返回值:
-            Union[dict, list[dict]]:
-                如果 pred_method 为 'lambda'，则返回一个字典，包含评估指标。
-                如果 pred_method 为 'communitude'，则返回一个包含两个字典的列表，分别为每个层的评估指标。
-        """
-        if self.community is None:
-            raise ValueError(
-                "Please fit the model first by calling fit_predict method."
-            )
-        if isinstance(self.community, tuple):
-            metrics = []
-            for comm in self.community:
-                evaluator = Evaluator(comm, target_community)
-                metrics.append(evaluator.get_all_metrics())
-        else:
-            evaluator = Evaluator(self.community, target_community)
-            metrics = evaluator.get_all_metrics()
-        return metrics

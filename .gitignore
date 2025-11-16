@@ -21,8 +21,12 @@ results/
 *.h5
 *.tar
 *.gz
+*.edges
+*.features
+*_new.py
 .quicksearch/
-
+stgraphs/
+st/
 src/experiment_results_analysis/
 src/experiment_scripts/
 src/processing_scripts/
