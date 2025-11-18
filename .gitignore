@@ -24,9 +24,12 @@ results/
 *.edges
 *.features
 *_new.py
+*.zip
+test/
 .quicksearch/
 stgraphs/
 st/
+precomputed/
 src/experiment_results_analysis/
 src/experiment_scripts/
 src/processing_scripts/

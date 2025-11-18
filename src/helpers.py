@@ -494,77 +494,6 @@ def json2long(json_input_path, long_output_path):
         print(f"[!] 错误: 写入文件 '{long_output_path}' 失败。 {e}")
 
 
-def compute_AS_with_NMF(A, r, random_state=42):
-    """
-    使用非负矩阵分解(NMF)计算给定邻接矩阵(或相似度矩阵)A的非对称惊喜度(Asymmetric Surprise, AS)。
-
-    参数:
-        A (numpy.ndarray): 图的邻接矩阵（或相似度矩阵），形状为(n×n)，其中n是节点数
-        r (int): 设定的要检测的社区数量
-        random_state (int, optional): 随机数生成器的种子，用于确保结果的可重复性，默认为42
-
-    返回:
-        tuple: 包含两个元素的元组
-            - float: 计算得到的非对称惊喜度(AS)值
-            - numpy.ndarray: 每个节点所属的社区标签，形状为(n,)
-
-    算法原理:
-        1. 使用NMF将邻接矩阵分解为两个非负矩阵的乘积，从而获得节点的社区隶属度
-        2. 基于分解结果确定每个节点的社区标签
-        3. 计算实际的社区内边比例与随机分布下的期望社区内边比例
-        4. 使用KL散度计算这两个分布之间的差异，得到非对称惊喜度
-    """
-    # 获取图中节点的数量
-    n = A.shape[0]
-
-    # -------- Step 1: NMF Decomposition --------
-    # 初始化NMF模型，使用NNDSVD(非负双重奇异值分解)作为初始化方法
-    # 设置最大迭代次数为500以确保收敛
-    nmf = NMF(n_components=r, init="nndsvd", random_state=random_state, max_iter=500)
-
-    # 对邻接矩阵A进行NMF分解，得到节点-社区隶属度矩阵U(n×k)
-    U = nmf.fit_transform(A)  # n x k
-
-    # 对每个节点，选择隶属度最大的社区作为其标签
-    labels = np.argmax(U, axis=1)  # 取最大隶属度的社区作为标签
-
-    # -------- Step 2: compute community structure --------
-    # 计算图中边的总数（因为邻接矩阵是对称的，所以需要除以2）
-    E = np.sum(A) / 2  # total number of edges
-
-    # 计算社区内部实际存在的边数
-    E_intra = 0
-    for c in set(labels):
-        # 获取属于当前社区c的所有节点的索引
-        idx = np.where(labels == c)[0]
-        # 提取这些节点组成的子图的邻接矩阵
-        subgraph = A[np.ix_(idx, idx)]
-        # 累加子图中的边数（同样除以2避免重复计算）
-        E_intra += np.sum(subgraph) / 2
-
-    # 计算实际的社区内边比例q
-    q = E_intra / E if E > 0 else 0
-
-    # 计算随机分布下期望的社区内边比例q_exp
-    # 首先计算每个社区的大小
-    sizes = [np.sum(labels == c) for c in set(labels)]
-    # 计算期望的社区内边比例：所有社区可能的内部边数之和除以图中可能的总边数
-    q_exp = sum(s * (s - 1) / 2 for s in sizes) / (n * (n - 1) / 2)
-
-    # 处理边界情况：如果q或q_exp为0或1，则KL散度无法定义，返回0
-    if q in [0, 1] or q_exp in [0, 1]:
-        return 0.0, labels
-
-    # 计算KL散度：衡量实际分布与期望分布之间的差异
-    KL = q * np.log(q / q_exp) + (1 - q) * np.log((1 - q) / (1 - q_exp))
-
-    # 计算非对称惊喜度：KL散度乘以2倍的边数
-    AS = 2 * E * KL
-
-    # 返回计算得到的非对称惊喜度和节点社区标签
-    return AS, labels
-
-
 def standardize_feature_ids(graphs_dir, output_dir="st"):
     """
     检测特征ID不连续或不从0开始的文件，并将其标准化（从0开始，连续化）
@@ -687,47 +616,6 @@ def standardize_feature_ids(graphs_dir, output_dir="st"):
     return results
 
 
-def determine_community_number(A, max_r=10):
-    """
-    使用非对称惊喜度(AS)指标自动确定图的最优社区数量。
-
-    参数:
-        A (numpy.ndarray): 图的邻接矩阵，形状为(n×n)，其中n是节点数
-        max_r (int, optional): 尝试的最大社区数量，默认值为10
-
-    返回:
-        int: 使AS值最大的最优社区数量
-
-    算法原理:
-        1. 遍历从2到max_r的所有可能社区数量k
-        2. 对每个k值，使用compute_AS_with_NMF计算对应的非对称惊喜度(AS)值
-        3. 找出AS值最大的k值，作为最优社区数量
-
-    注意事项:        - 社区数量通常从2开始尝试，因为单个社区没有划分意义
-        - 当存在多个k值对应相同的最大AS值时，返回第一个出现的k值
-    """
-    # 初始化列表用于存储不同社区数量对应的AS值
-    AS_values = []
-
-    # 遍历从2到max_r的所有可能社区数量k
-    # 2是社区数量的最小有意义值，单个社区无法体现社区划分
-    for k in range(2, max_r + 1):
-        # 计算当前社区数量k对应的非对称惊喜度值
-        # 使用固定的random_state=42确保结果的可重复性
-        AS_values.append(compute_AS_with_NMF(A, k, random_state=42))
-
-    # 找出所有AS值中的最大值
-    max_AS = max(AS_values)
-
-    # 遍历AS值列表，找出第一个等于最大值的索引
-    for index, value in enumerate(AS_values):
-        if value == max_AS:
-            # 将索引转换为对应的社区数量k（索引从0开始，对应k=2）
-            r = index + 2
-            # 返回最优社区数量
-            return r
-
-
 def check_featjson(featdict):
     # 验证节点id是否从零开始且连续
     node_ids = sorted(list(int(node_id) for node_id in featdict.keys()))
@@ -800,6 +688,79 @@ def json2featmat(file_path=None):
     )
     csr = coo.tocsr()
     return csr
+
+
+def compute_AS(A, r, random_state=42):
+    """
+    计算邻接矩阵 A 的非对称惊喜度 (AS)。
+    """
+    n = A.shape[0]
+
+    nmf = NMF(n_components=r, init="random", random_state=random_state, max_iter=1000)
+    U = nmf.fit_transform(A)
+    labels = np.argmax(U, axis=1)
+
+    E = np.sum(A) / 2
+    E_intra = 0
+    for c in np.unique(labels):
+        idx = np.where(labels == c)[0]
+        subgraph = A[np.ix_(idx, idx)]
+        E_intra += np.sum(subgraph) / 2
+
+    q = E_intra / E if E > 0 else 0
+    sizes = [np.sum(labels == c) for c in np.unique(labels)]
+    q_exp = sum(s * (s - 1) / 2 for s in sizes) / (n * (n - 1) / 2)
+
+    eps = 1e-10
+    q = np.clip(q, eps, 1 - eps)
+    q_exp = np.clip(q_exp, eps, 1 - eps)
+
+    KL = q * np.log(q / q_exp) + (1 - q) * np.log((1 - q) / (1 - q_exp))
+    AS = 2 * E * KL
+
+    return AS
+
+
+def determine_community_number(
+    A, max_r=10, save_path="results/best_r", file_name="AS_curve.png"
+):
+    """
+    自动确定最优社区数，同时保存 AS 随社区数变化的曲线图。
+
+    参数:
+        A (np.ndarray): 邻接矩阵 (n x n)
+        max_r (int): 尝试的最大社区数
+        save_path (str): 保存图像的文件夹
+        file_name (str): 保存图像的文件名
+
+    返回:
+        int: 最优社区数量
+    """
+    r_values = list(range(2, max_r + 1))
+    AS_values = [compute_AS(A, r) for r in r_values]
+
+    best_idx = int(np.argmax(AS_values))
+    best_r = r_values[best_idx]
+    best_AS = AS_values[best_idx]
+
+    # 创建文件夹
+    os.makedirs(save_path, exist_ok=True)
+    full_path = os.path.join(save_path, file_name)
+
+    # 绘制并保存图像
+    plt.figure(figsize=(6, 4))
+    plt.plot(r_values, AS_values, marker="o", linestyle="-", color="b", label="AS")
+    plt.scatter([best_r], [best_AS], color="red", zorder=5)
+    plt.text(best_r, best_AS, f"  max AS at r={best_r}", color="red")
+    plt.xlabel("Number of communities (r)")
+    plt.ylabel("Asymmetric Surprise (AS)")
+    plt.title("AS vs Community Number")
+    plt.grid(True)
+    plt.legend()
+    plt.savefig(full_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    return best_r
 
 
 if __name__ == "__main__":

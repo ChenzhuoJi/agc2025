@@ -5,22 +5,33 @@ from typing import Literal
 import time
 import zipfile
 import os
+import traceback
 
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
+import igraph as ig
+import leidenalg
+from sklearn.preprocessing import normalize
 from rich.console import Console
+from rich.table import Table
+from rich import box
+
+import networkx as nx
 
 from src.ml_jnmf import ML_JNMF
-from src.processor import feature_process, edge_process, high_order
-from src.helpers import compute_AS_with_NMF
+from src.processor import feature_process, high_order, featjson2sparse
+from src.helpers import determine_community_number
 
-preprocessParameters = {"order": 5, "decay": 2}
+preprocessParameters = {"feature_kernel": "rbf", "order": 5, "decay": 2}
 
 mfParameters = {"interWeight": 4, "pairwiseWeight": 2}
 
 pred_method = "lambda"
 
 defalut_dataname = "cora"
+array_dtype = np.float32
+
 console = Console()
 
 
@@ -29,6 +40,8 @@ def build_folders():
     os.makedirs("results/", exist_ok=True)
     os.makedirs("results/logs/", exist_ok=True)
     os.makedirs("data/", exist_ok=True)
+    os.makedirs("precomputed/", exist_ok=True)
+    os.makedirs("results/best_r/", exist_ok=True)
 
 
 def extract_data():
@@ -40,27 +53,197 @@ def extract_data():
             zip_ref.extractall("data/")
 
 
+def load_data(dataname: str):
+    console = Console()
+
+    # 加载数据
+    feature_file = f"stgraphs/{dataname}.features"
+    features_sparse = featjson2sparse(feature_file)
+
+    # 读取边（假设格式：u,v 每行一个边）
+    edges_file = f"stgraphs/{dataname}.edges"
+    edges = np.loadtxt(edges_file, delimiter=",", dtype=int)
+
+    # 节点总数（假设 ID 基于 0）
+    n = edges.max() + 1
+
+    # 构建双向边
+    row = np.concatenate([edges[:, 0], edges[:, 1]])
+    col = np.concatenate([edges[:, 1], edges[:, 0]])
+    data = np.ones(len(row), dtype=np.float32)
+
+    # 构建稀疏邻接矩阵
+    adj_matrix_sparse = sp.csr_matrix((data, (row, col)), shape=(n, n))
+    # adj_matrix_sparse.setdiag(1.0)
+    is_symmetric = (adj_matrix_sparse != adj_matrix_sparse.T).nnz == 0
+    if not is_symmetric:
+        console.print(f"[bold red]警告: 图 {dataname} 不是对称的![/bold red]")
+
+    # 创建简约表格
+    table = Table(show_header=True, header_style="default", box=box.SIMPLE)
+    table.add_column("矩阵")
+    table.add_column("形状")
+    table.add_column("数据格式")
+    table.add_column("稀疏度")
+    table.add_column("内存")
+
+    # 计算内存占用（近似）
+    features_memory = (
+        features_sparse.data.nbytes
+        + features_sparse.indices.nbytes
+        + features_sparse.indptr.nbytes
+    ) / 1024
+    adj_memory = (
+        adj_matrix_sparse.data.nbytes
+        + adj_matrix_sparse.indices.nbytes
+        + adj_matrix_sparse.indptr.nbytes
+    ) / 1024
+
+    table.add_row(
+        "特征矩阵",
+        f"{features_sparse.shape[0]}×{features_sparse.shape[1]}",
+        f"{type(features_sparse).__name__} {features_sparse.dtype}",
+        f"{features_sparse.nnz/(features_sparse.shape[0]*features_sparse.shape[1]):.4%}",
+        f"{features_memory:.1f} KB",
+    )
+
+    table.add_row(
+        "邻接矩阵",
+        f"{adj_matrix_sparse.shape[0]}×{adj_matrix_sparse.shape[1]}",
+        f"{type(adj_matrix_sparse).__name__} {adj_matrix_sparse.dtype}",
+        f"{adj_matrix_sparse.nnz/(adj_matrix_sparse.shape[0]*adj_matrix_sparse.shape[1]):.4%}",
+        f"{adj_memory:.1f} KB",
+    )
+
+    # 显示信息
+    console.print(f"\n数据集: {dataname}")
+    console.print(f"节点数量: {adj_matrix_sparse.shape[0]}")
+    console.print(f"边数量: {edges.shape[0]}")
+    console.print(table)
+
+    return features_sparse, adj_matrix_sparse
+
+
+# TODO: 优化preprocess，主要优化联合矩阵的计算时间
+# 方案一：预处理后，全都转化为csr_matrix，非常慢 ❌
+# 方案二：预处理后，全都转化为np.ndarray ✅，citeseer:2.1816s, 但是大矩阵的高阶运算时间还是会很大。最大占用内存约20GB，在处理30000节点的数据时出现
+# 进一步优化，发现ls稀疏性并不是都很好，内存占用有时候比稠密矩阵要大，全都转换为np.ndarray
 def preprocess(
-    dataname: str,
+    features_sparse: sp.csr_matrix,
+    adj_matrix_sparse: sp.csr_matrix,
     preprocessParams: dict = preprocessParameters,
     edge_undirected: bool = True,
+    dataname: str = None
 ):
+    kernel = preprocessParams["feature_kernel"]
     order = preprocessParams["order"]
     decay = preprocessParams["decay"]
+    la_time = 0
+    ls_time = 0
+    li_time = 0
+    if dataname is not None:
+        read = True
+    
+    t1 = time.time()
 
-    la = feature_process(dataname)
-    ls = high_order(edge_process(dataname, edge_undirected), order, decay)
-    la /= np.max(la)
-    ls /= np.max(ls)
-    lc = la @ ls
-    li = high_order(lc, order, decay)
-    li /= np.max(li)
+    if read == True and os.path.exists(f"precomputed/{dataname}_la.npy"):
+        la = np.load(f"precomputed/{dataname}_la.npy")
+    else:
+        X = features_sparse.tocsr()
+        la = feature_process(X, kernel)  # 这个矩阵是稠密的np.ndarray
+        la = la.astype(array_dtype)
+        max_val = np.diag(la).max()
+        if max_val > 0:
+            la /= max_val
+        t2 = time.time()
+        la_time = t2 - t1
+        with open(f"results/logs/{dataname}_la_time.txt", "w") as f:
+            f.write(f"{la_time:.4f} s")
+        np.save(f"precomputed/{dataname}_la.npy", la)
+
+    t3 = time.time()
+    if read == True and os.path.exists(f"precomputed/{dataname}_ls.npy"):
+        ls = np.load(f"precomputed/{dataname}_ls.npy")
+    else:
+        G = adj_matrix_sparse.tocsr()
+        ls = high_order(G, order, decay)  # 这个矩阵是稀疏的sp.csr_matrix
+        ls = ls.toarray().astype(array_dtype)
+        max_val = np.diag(ls).max()
+        if max_val > 0:
+            ls /= max_val
+        t4 = time.time()
+        ls_time = t4 - t3
+        with open(f"results/logs/{dataname}_ls_time.txt", "w") as f:
+            f.write(f"{ls_time:.4f} s")
+        np.save(f"precomputed/{dataname}_ls.npy", ls)
+
+    t5 = time.time()
+    if read == True and os.path.exists(f"precomputed/{dataname}_li.npy"):
+        li = np.load(f"precomputed/{dataname}_li.npy")
+    else:
+        # 转换ls为np.ndarray，适应后续与la的矩阵乘法
+        if sp.issparse(ls):
+            ls_array = ls.toarray()
+
+        # 计算lc，这是一个稠密的np.ndarray。
+        lc = la @ ls_array
+        # 计算li，这是一个稠密的np.ndarray。
+        li = high_order(lc, order, decay)
+        max_val = np.diag(li).max()
+        if max_val > 0:
+            li /= max_val
+        t6 = time.time()
+
+        li_time = t6 - t5
+        with open(f"results/logs/{dataname}_li_time.txt", "w") as f:
+            f.write(f"{li_time:.4f} s")
+        np.save(f"precomputed/{dataname}_li.npy", li)
+
+    # la,li是稠密矩阵，ls是稀疏矩阵
+    table = Table(show_header=True, header_style="default", box=box.SIMPLE)
+
+    # 移除列的颜色样式
+    table.add_column("矩阵")
+    table.add_column("处理时间")
+    table.add_column("数据格式")
+    table.add_column("内存占用")
+
+    # 添加数据行，保持内容不变
+    table.add_row(
+        "相似度矩阵",
+        f"{la_time:.4f} s",
+        f"{type(la).__name__} {la.dtype.name}",
+        f"{la.nbytes/(1024**2):.1f} MB",
+    )
+    table.add_row(
+        "高阶图矩阵",
+        f"{ls_time:.4f} s",
+        f"{type(ls).__name__} {ls.dtype}",
+        f"{(ls.data.nbytes+ls.indices.nbytes+ls.indptr.nbytes)/(1024**2):.1f} MB",
+    )
+    table.add_row(
+        "联合图矩阵",
+        f"{li_time:.4f} s",
+        f"{type(li).__name__} {li.dtype.name}",
+        f"{li.nbytes/(1024**2):.1f} MB",
+    )
+
+    console.print(table)
+
     return la, ls, li
 
 
-def calculate_r(la, ls, li, targets):
-    r = np.unique(targets).size
-    return r
+# TODO: 把论文中的calculate_r实现过来
+def calculate_r(la, ls, li, dataname):
+    # 自动确定最优社区数量
+    if os.path.exists(f"results/best_r/{dataname}.txt"):
+        with open(f"results/best_r/{dataname}.txt", "r") as f:
+            best_r = int(f.read().strip())
+    else:
+        best_r = determine_community_number(li, max_r=10, save_path=f"results/best_r/{dataname}")
+        with open(f"results/best_r/{dataname}.txt", "w") as f:
+            f.write(f"{best_r}")
+    return best_r
 
 
 def experiment(
@@ -76,10 +259,13 @@ def experiment(
     COMPUTE_TIME = time.time()
 
     edge_undirected = True
-
+    features_sparse, adj_matrix_sparse = load_data(dataname)
     # 数据预处理：生成属性层、结构层和跨层信息矩阵
     PREPROCESSING_TIME = time.time()
-    la, ls, li = preprocess(dataname, preprocessParams, edge_undirected)
+    la, ls, li = preprocess(
+        features_sparse, adj_matrix_sparse, preprocessParams, edge_undirected, dataname
+    )
+    ls = ls.toarray()
     PREPROCESSING_TIME = time.time() - PREPROCESSING_TIME
     id_and_targets = pd.read_csv(f"stgraphs/{dataname}.targets", header=None)
 
@@ -96,8 +282,8 @@ def experiment(
     else:
         raise ValueError("检查目标值是否正确")
 
-    # 计算低维空间维度r（基于数据特征和目标值）
-    r = calculate_r(la, ls, li, targets)
+    # 计算低维空间维度r
+    r = calculate_r(la, ls, li, dataname)
     print(f"r: {r}")
 
     # 创建ML-JNMF模型实例并传入数据和模型参数
@@ -174,6 +360,24 @@ def experiment(
     return log
 
 
+def precompute(
+    dataname: str,
+    preprocessParams: dict,
+):
+    edge_undirected = True
+    features_sparse, adj_matrix_sparse = load_data(dataname)
+    # 数据预处理：生成属性层、结构层和跨层信息矩阵
+    PREPROCESSING_TIME = time.time()
+    la, ls, li = preprocess(
+        features_sparse, adj_matrix_sparse, preprocessParams, edge_undirected, dataname
+    )
+    ls = ls.toarray()
+    PREPROCESSING_TIME = time.time() - PREPROCESSING_TIME
+    with open(f"precomputed/{dataname}_preprocessing_time.txt", "w") as f:
+        f.write(f"{PREPROCESSING_TIME:.4f} s")
+    r = calculate_r(la, ls, li, dataname)
+    
+
 def main():
     # 创建ArgumentParser对象
     parser = argparse.ArgumentParser(
@@ -247,12 +451,13 @@ if __name__ == "__main__":
             dataname = file.split(".")[0]
             all_datanames.append(dataname)
 
-    for dataname in ["cora"]:
+    for dataname in all_datanames:
         console.print(
             f"Running experiment on {dataname} with {pred_method}, {preprocessParameters},{mfParameters}",
             style="magenta",
         )
         try:
+            build_folders()
             experiment(dataname, pred_method, preprocessParameters, mfParameters)
         except MemoryError as e:
             print(f"内存不足，跳过数据集 {dataname}: {str(e)}")
@@ -262,4 +467,5 @@ if __name__ == "__main__":
             continue
         except Exception as e:
             print(f"处理数据集 {dataname} 时发生未知错误: {str(e)}")
+            traceback.print_exc()
             continue
