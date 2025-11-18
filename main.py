@@ -45,12 +45,17 @@ def build_folders():
 
 
 def extract_data():
-    """从压缩包中提取文件。"""
-    with zipfile.ZipFile("graphs.zip", "r") as zip_ref:
-        if os.path.exists("stgraphs"):
-            return
-        else:
-            zip_ref.extractall("stgraphs/")
+    zip_file = "stgraphs.zip"
+    out_dir = "stgraphs2"
+
+    # 如果输出目录不存在则创建
+    os.makedirs(out_dir, exist_ok=True)
+
+    # 开始解压
+    with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+        zip_ref.extractall(out_dir)
+
+    print(f"解压完成 → {out_dir}/")
 
 
 def load_data(dataname: str):
