@@ -47,10 +47,10 @@ def build_folders():
 def extract_data():
     """从压缩包中提取文件。"""
     with zipfile.ZipFile("graphs.zip", "r") as zip_ref:
-        if os.path.exists("data/graphs"):
+        if os.path.exists("stgraphs"):
             return
         else:
-            zip_ref.extractall("data/")
+            zip_ref.extractall("stgraphs/")
 
 
 def load_data(dataname: str):
