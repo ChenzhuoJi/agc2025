@@ -25,6 +25,7 @@ results/
 *.features
 *_new.py
 *.zip
+!stgraphs.zip
 test/
 .quicksearch/
 stgraphs/
