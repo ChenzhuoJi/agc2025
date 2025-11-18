@@ -46,7 +46,7 @@ def build_folders():
 
 def extract_data():
     zip_file = "stgraphs.zip"
-    out_dir = "stgraphs2"
+    out_dir = "stgraphs"
 
     # 如果输出目录不存在则创建
     os.makedirs(out_dir, exist_ok=True)
