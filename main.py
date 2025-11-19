@@ -224,7 +224,7 @@ def preprocess(
         "高阶图矩阵",
         f"{ls_time:.4f} s",
         f"{type(ls).__name__} {ls.dtype}",
-        f"{(ls.data.nbytes+ls.indices.nbytes+ls.indptr.nbytes)/(1024**2):.1f} MB",
+        f"{ls.nbytes/(1024**2):.1f} MB",
     )
     table.add_row(
         "联合图矩阵",
@@ -270,7 +270,8 @@ def experiment(
     la, ls, li = preprocess(
         features_sparse, adj_matrix_sparse, preprocessParams, edge_undirected, dataname
     )
-    ls = ls.toarray()
+    if sp.issparse(ls):
+        ls = ls.toarray()
     PREPROCESSING_TIME = time.time() - PREPROCESSING_TIME
     id_and_targets = pd.read_csv(f"stgraphs/{dataname}.targets", header=None)
 
@@ -456,7 +457,7 @@ if __name__ == "__main__":
             dataname = file.split(".")[0]
             all_datanames.append(dataname)
 
-    for dataname in all_datanames:
+    for dataname in ['cora']:
         console.print(
             f"Running experiment on {dataname} with {pred_method}, {preprocessParameters},{mfParameters}",
             style="magenta",
