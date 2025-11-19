@@ -146,7 +146,7 @@ class ML_JNMF:
     def __init__(
         self,
         la: np.ndarray,
-        ls: sp.csr_matrix,
+        ls: np.ndarray, # 不能用稀疏矩阵，用稀疏矩阵爆内存
         li: np.ndarray,
         interWeight: float = 5.0,
         pairwiseWeight: float = 2.0,
@@ -194,9 +194,12 @@ class ML_JNMF:
         if self.use_gpu:
             # ---- GPU 模式 -> 转成 torch.Tensor 并放到 CUDA ----
             self.la = torch.tensor(la, dtype=torch.float32, device=self.device)
-            self.ls = torch.tensor(
-                ls.toarray(), dtype=torch.float32, device=self.device
-            )
+            if sp.issparse(ls):
+                self.ls = torch.tensor(
+                    ls.toarray(), dtype=torch.float32, device=self.device
+                )
+            else:
+                self.ls = torch.tensor(ls, dtype=torch.float32, device=self.device)
             self.li = torch.tensor(li, dtype=torch.float32, device=self.device)
 
         else:
@@ -221,73 +224,6 @@ class ML_JNMF:
         self.is_converged = False
         self.early_stopping = False
         self.community = None
-
-    def _optimize_matrix_formats(self):
-        """第一步：确保每个矩阵都用最高效的格式"""
-        print("=== 矩阵格式优化 ===")
-
-        # 处理 la（属性层矩阵）
-        if sp.issparse(self.la):
-            sparsity = 1 - self.la.nnz / (self.la.shape[0] * self.la.shape[1])
-            print(f"la 稀疏度: {sparsity:.3f}")
-            if sparsity < 0.9:  # 稀疏度小于90%，转稠密
-                print("转换 la 为稠密格式")
-                self.la = self.la.toarray()
-            else:
-                # 确保是CSR格式（计算最快）
-                if self.la.format != "csr":
-                    self.la = self.la.tocsr()
-                    print("转换 la 为CSR格式")
-        else:
-            zero_ratio = np.sum(self.la == 0) / self.la.size
-            print(f"la 零元素比例: {zero_ratio:.3f}")
-            if zero_ratio > 0.9:  # 零元素比例大于90%，转稀疏
-                print("转换 la 为稀疏格式")
-                self.la = sp.csr_matrix(self.la)
-            else:
-                print("la 已经是稠密格式")
-
-        # 处理 ls（结构层矩阵）
-        if sp.issparse(self.ls):
-            sparsity = 1 - self.ls.nnz / (self.ls.shape[0] * self.ls.shape[1])
-            print(f"ls 稀疏度: {sparsity:.3f}")
-            if sparsity < 0.9:
-                print("转换 ls 为稠密格式")
-                self.ls = self.ls.toarray()
-            else:
-                if self.ls.format != "csr":
-                    self.ls = self.ls.tocsr()
-                    print("转换 ls 为CSR格式")
-        else:
-            zero_ratio = np.sum(self.ls == 0) / self.ls.size
-            print(f"ls 零元素比例: {zero_ratio:.3f}")
-            if zero_ratio > 0.9:  # 零元素比例大于90%，转稀疏
-                print("转换 ls 为稀疏格式")
-                self.ls = sp.csr_matrix(self.ls)
-            else:
-                print("ls 已经是稠密格式")
-
-        # 处理 li（层间矩阵）
-        if sp.issparse(self.li):
-            sparsity = 1 - self.li.nnz / (self.li.shape[0] * self.li.shape[1])
-            print(f"li 稀疏度: {sparsity:.3f}")
-            if sparsity < 0.9:
-                print("转换 li 为稠密格式")
-                self.li = self.li.toarray()
-            else:
-                if self.li.format != "csr":
-                    self.li = self.li.tocsr()
-                    print("转换 li 为CSR格式")
-        else:
-            zero_ratio = np.sum(self.li == 0) / self.li.size
-            print(f"li 零元素比例: {zero_ratio:.3f}")
-            if zero_ratio > 0.9:  # 零元素比例大于90%，转稀疏
-                print("转换 li 为稀疏格式")
-                self.li = sp.csr_matrix(self.li)
-            else:
-                print("li 已经是稠密格式")
-
-        print("=== 矩阵格式优化完成 ===\n")
 
     def matrixInit(self, r: int, init: str = "nndsvdar"):
         """
@@ -343,19 +279,19 @@ class ML_JNMF:
         return self.U1, self.U2, self.B1, self.B2, self.S12
 
     def calculateLoss(self) -> float:
-        """计算多模态联合非负矩阵分解(ML-JNMF)模型的总目标函数损失值。
+        """Torch + NumPy 混合兼容的 ML-JNMF 损失计算"""
 
-        该方法计算模型的综合损失，包括内部层损失、层间损失和成对相似度损失，
-        并通过损失跟踪器记录当前训练步骤的各项损失值，同时进行异常值检测。
+        use_torch = self.use_gpu  # 是否使用 torch
+        device = self.device if self.use_gpu else None
 
-        Returns:
-            float: 模型的总损失值，即所有损失项的加权和
-        """
+        # ============= 公共工具函数： L21 Norm ============= #
+        def l21_norm_torch(X):
+            return torch.norm(X, dim=1).sum()
 
-        def l21_norm(X):
-            """计算矩阵的L2,1范数（行L2范数的和）"""
+        def l21_norm_np(X):
             return np.sum(np.sqrt(np.sum(X**2, axis=1)))
 
+        # ============= 1. Intra-layer Loss (L21) ============= #
         def efficient_l21_norm_intra(A, U, batch_size=1000):
             n = A.shape[0]
             total = 0.0
@@ -363,67 +299,75 @@ class ML_JNMF:
             for i in range(0, n, batch_size):
                 end = min(i + batch_size, n)
 
-                # 批量获取A的行
-                if sp.issparse(A):
-                    A_batch = A[i:end].toarray()  # 形状: (batch_size, n)
+                if use_torch:
+                    A_batch = A[i:end]  # (bs, n)
+                    U_batch = U[i:end]  # (bs, r)
+                    recon = U_batch @ U.T  # (bs, n)
+                    total += l21_norm_torch(A_batch - recon)
                 else:
-                    A_batch = A[i:end]
-
-                # 批量计算UU^T的对应行
-                U_batch = U[i:end]  # 形状: (batch_size, r)
-                uuT_batch = U_batch @ U.T  # 形状: (batch_size, n)
-
-                error_batch = A_batch - uuT_batch
-                norms_batch = np.linalg.norm(error_batch, axis=1)  # 每行的L2范数
-                total += np.sum(norms_batch)
+                    if sp.issparse(A):
+                        A_batch = A[i:end].toarray()
+                    else:
+                        A_batch = A[i:end]
+                    U_batch = U[i:end]
+                    recon = U_batch @ U.T
+                    total += l21_norm_np(A_batch - recon)
 
             return total
 
+        # ============= 2. Inter-layer Loss ============= #
         def efficient_l21_norm_inter(A, B1, S12, B2, batch_size=1000):
-            """计算 ||A - B1 S12 B2^T||_{2,1} 的高效版本"""
             n = A.shape[0]
             total = 0.0
 
-            # 预计算 B1S12，避免重复计算
-            B1S12 = B1 @ S12  # 形状: (n, r)
+            if use_torch:
+                B1S12 = B1 @ S12  # (n, r)
+            else:
+                B1S12 = B1 @ S12
 
             for i in range(0, n, batch_size):
                 end = min(i + batch_size, n)
 
-                if sp.issparse(A):
-                    A_batch = A[i:end].toarray()
-                else:
+                if use_torch:
                     A_batch = A[i:end]
-
-                # 计算 (B1 S12 B2^T) 的对应行
-                B1S12_batch = B1S12[i:end]  # 形状: (batch_size, r)
-                reconstruction_batch = B1S12_batch @ B2.T  # 形状: (batch_size, n)
-
-                error_batch = A_batch - reconstruction_batch
-                total += np.sum(np.linalg.norm(error_batch, axis=1))
+                    recon = B1S12[i:end] @ B2.T
+                    total += l21_norm_torch(A_batch - recon)
+                else:
+                    if sp.issparse(A):
+                        A_batch = A[i:end].toarray()
+                    else:
+                        A_batch = A[i:end]
+                    recon = B1S12[i:end] @ B2.T
+                    total += l21_norm_np(A_batch - recon)
 
             return total
 
+        # ============= 3. Frobenius Diff ============= #
         def efficient_frobenius_diff(U, B):
-            """高效计算 ||UU^T - BB^T||_F^2"""
-            # 计算小矩阵（避免大矩阵运算）
-            UTU = U.T @ U  # 形状: (r, r)
-            BTB = B.T @ B  # 形状: (r, r)
-            UTB = U.T @ B  # 形状: (r, r)
+            if use_torch:
+                UTU = U.T @ U
+                BTB = B.T @ B
+                UTB = U.T @ B
 
-            # 使用迹的性质
-            term1 = np.linalg.norm(UTU, "fro") ** 2  # tr(UU^TUU^T)
-            term2 = 2 * np.linalg.norm(UTB, "fro") ** 2  # 2tr(UU^TBB^T)
-            term3 = np.linalg.norm(BTB, "fro") ** 2  # tr(BB^TBB^T)
+                term1 = torch.norm(UTU, p="fro") ** 2
+                term2 = 2 * torch.norm(UTB, p="fro") ** 2
+                term3 = torch.norm(BTB, p="fro") ** 2
+                return term1 - term2 + term3
+            else:
+                UTU = U.T @ U
+                BTB = B.T @ B
+                UTB = U.T @ B
+                return (
+                    np.linalg.norm(UTU, "fro") ** 2
+                    - 2 * np.linalg.norm(UTB, "fro") ** 2
+                    + np.linalg.norm(BTB, "fro") ** 2
+                )
 
-            return term1 - term2 + term3
-
+        # ============= 计算各项损失 ============= #
         attributes_layer_loss = efficient_l21_norm_intra(self.la, self.U1)
         structure_layer_loss = efficient_l21_norm_intra(self.ls, self.U2)
         intra_loss = attributes_layer_loss + structure_layer_loss
 
-        # --- 2. 计算层间损失 (Inter-layer Loss) ---
-        # 公式：mu1 * ||L_i - B1*S12*B2^T||_{2,1}
         inter_loss = self.mu1 * efficient_l21_norm_inter(
             self.li, self.B1, self.S12, self.B2
         )
@@ -432,81 +376,36 @@ class ML_JNMF:
             efficient_frobenius_diff(self.U1, self.B1)
             + efficient_frobenius_diff(self.U2, self.B2)
         )
-        # --- 总损失 ---
+
         total_loss = intra_loss + inter_loss + sim_loss
 
-        # --- 记录损失值 ---
+        # 注意：Torch tensor 转 python float
+        if use_torch:
+            total_loss_value = total_loss.item()
+            att_v = attributes_layer_loss.item()
+            str_v = structure_layer_loss.item()
+            intra_v = intra_loss.item()
+            inter_v = inter_loss.item()
+            sim_v = sim_loss.item()
+        else:
+            total_loss_value = total_loss
+            att_v = attributes_layer_loss
+            str_v = structure_layer_loss
+            intra_v = intra_loss
+            inter_v = inter_loss
+            sim_v = sim_loss
+
+        # ====== 记录损失 ====== #
         self.loss_tracker.step(
-            total_loss,
-            attributes_layer_loss,
-            structure_layer_loss,
-            intra_loss,
-            inter_loss,
-            sim_loss,
+            total_loss_value,
+            att_v,
+            str_v,
+            intra_v,
+            inter_v,
+            sim_v,
         )
 
-        # # -------- 内部层损失（使用L2,1范数，无平方） --------
-        # # 属性层重构损失：衡量属性矩阵与分解后矩阵乘积的差异
-        # attributes_layer_loss = l21_norm(self.la - self.U1 @ self.U1.T)  # 实验分析部分
-        # # 结构层重构损失：衡量结构矩阵与分解后矩阵乘积的差异
-        # structure_layer_loss = l21_norm(self.ls - self.U2 @ self.U2.T)
-        # # 内部层总损失：属性层损失与结构层损失之和
-        # intra_loss = attributes_layer_loss + structure_layer_loss
-
-        # # -------- 层间损失（使用L2,1范数，无平方） --------
-        # # 衡量跨层信息传递的误差，由超参数mu1控制权重
-        # inter_loss = self.mu1 * l21_norm(self.li - self.B1 @ self.S12 @ self.B2.T)
-
-        # # -------- 成对相似度损失（Frobenius范数的平方） --------
-        # # 衡量不同表示空间之间的一致性，由超参数mu2控制权重
-        # sim_loss = self.mu2 * (
-        #     np.linalg.norm(self.U1 @ self.U1.T - self.B1 @ self.B1.T, "fro") ** 2
-        #     + np.linalg.norm(self.U2 @ self.U2.T - self.B2 @ self.B2.T, "fro") ** 2
-        # )
-
-        # # -------- 总损失 --------
-        # # 综合所有损失项，形成最终的优化目标
-        # total_loss = intra_loss + inter_loss + sim_loss
-
-        # # 使用损失跟踪器记录当前步骤的各项损失值，用于后续分析
-        # self.loss_tracker.step(
-        #     total_loss,
-        #     attributes_layer_loss,
-        #     structure_layer_loss,
-        #     intra_loss,
-        #     inter_loss,
-        #     sim_loss,
-        # )  # 暂时分析的代码
-
-        # # -------- 检查异常值（nndsvd初始化遇见全0列，即死列，会导致初始化的矩阵有nan值） --------
-        # if np.isnan(total_loss) or np.isinf(total_loss):
-        #     print("⚠️ Loss NaN detected")
-        #     print(
-        #         "self.la:",
-        #         np.isnan(self.la).any(),
-        #         "A2:",
-        #         np.isnan(self.ls).any(),
-        #         "A12:",
-        #         np.isnan(self.li).any(),
-        #     )
-        #     print("U1:", np.isnan(self.U1).any(), "U2:", np.isnan(self.U2).any())
-        #     print(
-        #         "B1:",
-        #         np.isnan(self.B1).any(),
-        #         "B2:",
-        #         np.isnan(self.B2).any(),
-        #         "S12:",
-        #         np.isnan(self.S12).any(),
-        #     )
-        #     print(
-        #         "Any Inf:",
-        #         np.isinf(self.U1).any()
-        #         or np.isinf(self.U2).any()
-        #         or np.isinf(self.B1).any(),
-        #     )
-        #     raise ValueError("NaN detected in loss computation")
-
-        return total_loss
+        return total_loss_value
 
     def build_Z(self, A, U, eps, batch_size=512):
         """构建对角矩阵 Z = diag(1 / ||A - UUᵀ||₂)，用于加权重构误差
@@ -1133,6 +1032,12 @@ class ML_JNMF:
         """
         if pred_method == "lambda":
             Z = lamb * self.U1 + (1 - lamb) * self.U2
+
+            # --- Torch 版本 ---
+            if isinstance(Z, torch.Tensor):
+                return torch.argmax(Z, dim=1).detach().cpu().numpy()
+
+            # --- NumPy 版本 ---
             return np.argmax(Z, axis=1)
 
         elif pred_method == "communitude":
