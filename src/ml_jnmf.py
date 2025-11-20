@@ -1,5 +1,5 @@
 import time
-from typing import Literal, Union
+from typing import Literal, Union, Tuple
 
 import numpy as np
 import pandas as pd
@@ -146,11 +146,11 @@ class ML_JNMF:
     def __init__(
         self,
         la: np.ndarray,
-        ls: np.ndarray, # 不能用稀疏矩阵，用稀疏矩阵爆内存
+        ls: np.ndarray,  # 不能用稀疏矩阵，用稀疏矩阵爆内存
         li: np.ndarray,
         interWeight: float = 5.0,
         pairwiseWeight: float = 2.0,
-        max_iter: int = 100,
+        max_iter: int = 50,
         convergence_tol: float = 1e-4,
         convergence_patience: int = 10,
         early_stopping_patience: int = 20,
@@ -188,25 +188,15 @@ class ML_JNMF:
         self.loss_tracker = lossTracker()
 
         # ----------------------------
-        # 3. 根据运行模式转为 numpy or torch
+        # 3. 不管什么运行模式，这时候不能转换成 torch.Tensor，初始化的时候需要用numpy来初始化, 正确做法是在fit中转换
         # ----------------------------
 
-        if self.use_gpu:
-            # ---- GPU 模式 -> 转成 torch.Tensor 并放到 CUDA ----
-            self.la = torch.tensor(la, dtype=torch.float32, device=self.device)
-            if sp.issparse(ls):
-                self.ls = torch.tensor(
-                    ls.toarray(), dtype=torch.float32, device=self.device
-                )
-            else:
-                self.ls = torch.tensor(ls, dtype=torch.float32, device=self.device)
-            self.li = torch.tensor(li, dtype=torch.float32, device=self.device)
-
-        else:
-            # ---- CPU 模式 -> 保持 numpy + scipy ----
-            self.la = la
-            self.ls = ls
-            self.li = li
+        self.la = la
+        self.ls = ls
+        self.li = li
+        assert (
+            self.la.shape[0] == self.ls.shape[0] == self.li.shape[0]
+        ), "输入矩阵维度不一致"
 
         self.size = la.shape[0]
 
@@ -218,14 +208,28 @@ class ML_JNMF:
         self.B1 = None
         self.B2 = None
         self.S12 = None
-
         self.loss_history = []
         self.final_loss = None
         self.is_converged = False
         self.early_stopping = False
         self.community = None
 
-    def matrixInit(self, r: int, init: str = "nndsvdar"):
+    def tensor_to_numpy(self, tensor: torch.Tensor) -> np.ndarray:
+        """
+        将 torch.Tensor 转换为 numpy.ndarray（CPU 模式直接返回）
+        """
+        if self.use_gpu:
+            return tensor.cpu().numpy()
+        else:
+            return tensor.numpy()
+
+    def matrixInit(self, r: int, init: str = "nndsvdar") -> Tuple[
+        Union[np.ndarray, torch.Tensor],
+        Union[np.ndarray, torch.Tensor],
+        Union[np.ndarray, torch.Tensor],
+        Union[np.ndarray, torch.Tensor],
+        Union[np.ndarray, torch.Tensor],
+    ]:
         """
         初始化多模态联合非负矩阵分解所需的所有矩阵（GPU/CPU 自动支持）
         """
@@ -233,17 +237,20 @@ class ML_JNMF:
         # --------------------------
         # 1. NMF 初始化全部在 CPU/numpy 上运行
         # --------------------------
-        U1, _ = _initialize_nmf(
-            self.la, n_components=r, init=init, random_state=self.random_state
-        )
-        U2, _ = _initialize_nmf(
-            self.ls, n_components=r, init=init, random_state=self.random_state
-        )
-        B1, B2t = _initialize_nmf(
-            self.li, n_components=r, init=init, random_state=self.random_state
-        )
-        B2 = B2t.T
-
+        # U1, _ = _initialize_nmf(
+        #     self.la, n_components=r, init=init, random_state=self.random_state
+        # )
+        # U2, _ = _initialize_nmf(
+        #     self.ls, n_components=r, init=init, random_state=self.random_state
+        # )
+        # B1, B2t = _initialize_nmf(
+        #     self.li, n_components=r, init=init, random_state=self.random_state
+        # )
+        # B2 = B2t.T
+        U1 = np.random.rand(self.size, r)
+        U2 = np.random.rand(self.size, r)
+        B1 = np.random.rand(self.size, r)
+        B2 = np.random.rand(self.size, r)
         # 替换 NaN
         U1 = np.nan_to_num(U1, nan=1e-6)
         U2 = np.nan_to_num(U2, nan=1e-6)
@@ -257,26 +264,29 @@ class ML_JNMF:
 
         # 如果没有 GPU，就返回 numpy
         if not self.use_gpu:
+            # CPU 模式直接返回 numpy
             return self.U1, self.U2, self.B1, self.B2, self.S12
+        else:
+            # --------------------------
+            # 2. GPU 模式：转换为 torch
+            # --------------------------
+            device = torch.device("cuda")
 
-        # --------------------------
-        # 2. GPU 模式：转换为 torch
-        # --------------------------
-        device = torch.device("cuda")
+            # la / ls / li：输入矩阵本身也要转成 torch（ls 是 csr 稀疏，需要 .toarray()）
+            self.la = torch.tensor(self.la, dtype=torch.float32, device=device)
+            self.ls = torch.tensor(
+                self.ls.toarray(), dtype=torch.float32, device=device
+            )
+            self.li = torch.tensor(self.li, dtype=torch.float32, device=device)
 
-        # la / ls / li：输入矩阵本身也要转成 torch（ls 是 csr 稀疏，需要 .toarray()）
-        self.la = torch.tensor(self.la, dtype=torch.float32, device=device)
-        self.ls = torch.tensor(self.ls.toarray(), dtype=torch.float32, device=device)
-        self.li = torch.tensor(self.li, dtype=torch.float32, device=device)
+            # 将初始化参数矩阵送上 GPU
+            self.U1 = torch.tensor(U1, dtype=torch.float32, device=device)
+            self.U2 = torch.tensor(U2, dtype=torch.float32, device=device)
+            self.B1 = torch.tensor(B1, dtype=torch.float32, device=device)
+            self.B2 = torch.tensor(B2, dtype=torch.float32, device=device)
+            self.S12 = torch.tensor(S12, dtype=torch.float32, device=device)
 
-        # 将初始化参数矩阵送上 GPU
-        self.U1 = torch.tensor(U1, dtype=torch.float32, device=device)
-        self.U2 = torch.tensor(U2, dtype=torch.float32, device=device)
-        self.B1 = torch.tensor(B1, dtype=torch.float32, device=device)
-        self.B2 = torch.tensor(B2, dtype=torch.float32, device=device)
-        self.S12 = torch.tensor(S12, dtype=torch.float32, device=device)
-
-        return self.U1, self.U2, self.B1, self.B2, self.S12
+            return self.U1, self.U2, self.B1, self.B2, self.S12
 
     def calculateLoss(self) -> float:
         """Torch + NumPy 混合兼容的 ML-JNMF 损失计算"""
@@ -495,7 +505,7 @@ class ML_JNMF:
             z[idx] = 1.0 / norms
         return z  # 长度 n 的向量
 
-    def updateU1_numpy(self, z1, z2, z12, eps):
+    def updateU1_numpy(self, z1, z2, z12, eps=1e-10) -> np.ndarray:
         # 分子部分：包含重构误差和与B1的一致性约束
         U1_num = (
             (z1[:, np.newaxis] * self.la) @ self.U1
@@ -514,7 +524,7 @@ class ML_JNMF:
         # 执行更新
         return U1_num / U1_den
 
-    def updateU1_torch(self, z1, z2, z12, eps=1e-10):
+    def updateU1_torch(self, z1, z2, z12, eps=1e-10) -> torch.Tensor:
         """
         使用 PyTorch (GPU 可加速) 的 U1 更新。
         仅基于原始 updateU1 的公式结构，无数学修改。
@@ -554,9 +564,9 @@ class ML_JNMF:
 
         return U1_num / U1_den
 
-    def updateU1(self, z1, z2, z12, eps=1e-10):
+    def updateU1(self, z1, z2, z12, eps=1e-10) -> Union[np.ndarray, torch.Tensor]:
         if self.use_gpu:
-            return self.updateU1_torch(z1, z2, z12, eps).detach().cpu().numpy()
+            return self.updateU1_torch(z1, z2, z12, eps)
         else:
             return self.updateU1_numpy(z1, z2, z12, eps)
 
@@ -645,7 +655,7 @@ class ML_JNMF:
 
         return U2_num / U2_den
 
-    def updateU2(self, z1, z2, z12, eps=1e-10):
+    def updateU2(self, z1, z2, z12, eps=1e-10) -> Union[np.ndarray, torch.Tensor]:
         if self.use_gpu:
             return self.updateU2_torch(z1, z2, z12, eps)
         else:
@@ -725,7 +735,7 @@ class ML_JNMF:
 
         return B1_num / B1_den
 
-    def updateB1(self, z1, z2, z12, eps=1e-10):
+    def updateB1(self, z1, z2, z12, eps=1e-10) -> Union[np.ndarray, torch.Tensor]:
         if self.use_gpu:
             return self.updateB1_torch(z1, z2, z12, eps)
         else:
@@ -807,7 +817,7 @@ class ML_JNMF:
 
         return B2_num / B2_den
 
-    def updateB2(self, z1, z2, z12, eps=1e-10):
+    def updateB2(self, z1, z2, z12, eps=1e-10) -> Union[np.ndarray, torch.Tensor]:
         if self.use_gpu:
             return self.updateB2_torch(z1, z2, z12, eps)
         else:
@@ -871,7 +881,7 @@ class ML_JNMF:
         # element-wise / and element-wise *
         return (S12_num / S12_den) * self.S12
 
-    def updateS(self, z1, z2, z12, eps=1e-10):
+    def updateS(self, z1, z2, z12, eps=1e-10) -> Union[np.ndarray, torch.Tensor]:
         if self.use_gpu:
             return self.updateS_torch(z1, z2, z12, eps)
         else:
@@ -901,9 +911,13 @@ class ML_JNMF:
 
         return self.U1, self.U2, self.B1, self.B2, self.S12
 
-    def multiplicativeUpdate(
-        self, eps=1e-10
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def multiplicativeUpdate(self, eps=1e-10) -> Tuple[
+        Union[np.ndarray, torch.Tensor],
+        Union[np.ndarray, torch.Tensor],
+        Union[np.ndarray, torch.Tensor],
+        Union[np.ndarray, torch.Tensor],
+        Union[np.ndarray, torch.Tensor],
+    ]:
         """更新U1, U2, B1, B2, S12矩阵，使用乘法更新规则。
 
         该方法根据当前的损失函数，通过矩阵乘法更新所有参数，确保非负性约束。
@@ -913,7 +927,7 @@ class ML_JNMF:
             eps (float, 可选): 小值，用于防止除零错误，默认值为1e-10。
 
         返回值:
-            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+            Tuple[Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor]]:
                 更新后的U1, U2, B1, B2, S12矩阵。
         """
 
@@ -943,11 +957,13 @@ class ML_JNMF:
         console = Console()
         t_fit = time.time()
         # Initialize matrices
+        # 这时候会根据self.use_gpu来判断是否转换为torch.Tensor
+        # 如果是GPU模式，三层矩阵 和 分解的初始化矩阵 会在matrixInit中转换为torch.Tensor
         self.U1, self.U2, self.B1, self.B2, self.S12 = self.matrixInit(r)
 
         # 初始化训练管理器
         best_loss = float("inf")
-        best_params = None
+        best_params = None  # 存储这个是必要的，因为最后要预测社区划分
 
         self.early_stopper.reset()
         self.convergence_checker.reset()
@@ -959,15 +975,13 @@ class ML_JNMF:
             loss = self.calculateLoss()
             self.loss_history.append(loss)
             if self.early_stopper.step(loss, best_loss):
-                # console.print(f"loss={loss:.4f}, best_loss={best_loss:.4f}")
                 self.U1, self.U2, self.B1, self.B2, self.S12 = best_params
                 self.is_converged = False
                 self.early_stopping = True
                 self.final_loss = best_loss
                 t_fit = time.time() - t_fit
                 console.print(
-                    f"[Early Stop] iteration={it+1}, best_loss={best_loss:.4f} at iteration {best_it+1}, n_nodes={self.size}, computing_time={t_fit:.4f}s",
-                    style="bold yellow",
+                    f"[bold color(226)][Early Stop] iteration={it+1}, best_loss={best_loss:.4f} at iteration {best_it+1}, n_nodes={self.size}, computing_time={t_fit:.4f}s[/bold color(226)]",
                 )
                 break
 
@@ -989,8 +1003,7 @@ class ML_JNMF:
                 self.is_converged = True
                 t_fit = time.time() - t_fit
                 console.print(
-                    f"[Converged] iteration={it+1}, loss={loss:.4f}, computing_time={t_fit:.4f}s",
-                    style="bold green",
+                    f"[bold green][Converged] iteration={it+1}, loss={loss:.4f}, computing_time={t_fit:.4f}s[/bold green]"
                 )
                 break
 
@@ -999,8 +1012,7 @@ class ML_JNMF:
             if not silent:
                 if (it + 1) % 10 == 0:
                     console.print(
-                        f"[Update] iteration={it+1}, loss={loss:.4f}, best_loss={best_loss:.4f}, computing_time={time.time() - time_start:.4f} s/it",
-                        style="blue",
+                        f"[dim color(235)][Update] iteration={it+1}, loss={loss:.4f}, best_loss={best_loss:.4f}, computing_time={time.time() - time_start:.4f} s/it[/dim color(235)]",
                     )
 
         # 如果循环自然结束，也使用最佳参数
@@ -1009,8 +1021,7 @@ class ML_JNMF:
             self.final_loss = best_loss
             t_fit = time.time() - t_fit
             console.print(
-                f"[End] iteration={it+1}, loss={best_loss:.4f}, computing_time={t_fit:.4f}s",
-                style="bold purple",
+                f"[bold red][End] iteration={it+1}, loss={best_loss:.4f}, computing_time={t_fit:.4f}s[/bold red]",
             )
         return self
 

@@ -5,16 +5,13 @@ Description: 图处理模块
 """
 
 import json
-import time
 import warnings
 from typing import List, Union
 import numpy as np
-import pandas as pd
 import scipy.sparse as sp
-from sklearn.metrics import pairwise_distances
 from sklearn.preprocessing import normalize
+from sklearn.metrics.pairwise import rbf_kernel
 import json
-import os
 
 
 def featjson2sparse(features_file):
@@ -81,43 +78,69 @@ def is_sparse_based_on_density(matrix: np.ndarray, threshold: float = 0.9) -> bo
     return zero_density > threshold
 
 
-def feature_process(featmat, kernel):
-    X = featmat.tocsr()
+def feature_process(featmat, kernel, sparse=True, gamma=0.5):
+    """
+    计算特征矩阵的相似度核矩阵。
+    同时支持稀疏矩阵和稠密矩阵，并针对不同类型进行了优化。
+
+    Args:
+        featmat: 输入特征矩阵 (scipy.sparse.csr_matrix 或 numpy.ndarray)。
+        kernel: 相似度核类型 ('linear', 'cosine', 'jaccard', 'rbf')。
+        sparse: 是否将输入视为稀疏矩阵。
+        gamma: RBF核的带宽参数。
+
+    Returns:
+        numpy.ndarray: 稠密的相似度矩阵。
+    """
+    X = featmat.tocsr() if sparse else featmat
+
+    similarity = None
+
     if kernel == "linear":
-        # K = X X^T, 可为稀疏矩阵
-        similarity = (X @ X.T).tocsr()
-    if kernel == "cosine":
+        if sparse:
+            similarity = (X @ X.T).tocsr()
+        else:
+            similarity = X @ X.T
+
+    elif kernel == "cosine":
         X_norm = normalize(X, norm="l2", axis=1)
-        similarity = (X_norm @ X_norm.T).tocsr()
-    if kernel == "jaccard":
-        # intersection = dot product for 0/1
-        inter = X @ X.T  # sparse
-        inter = inter.tocsr()
+        if sparse:
+            similarity = (X_norm @ X_norm.T).tocsr()
+        else:
+            similarity = X_norm @ X_norm.T
 
-        row_sums = np.array(X.sum(axis=1)).reshape(-1)
-        # union = A + B - intersection
-        # 注意：这里的广播不会稠密化 intersection（它本身是稀疏）
-        unions = row_sums[:, None] + row_sums[None, :] - inter.toarray()
+    elif kernel == "jaccard":
+        # Jaccard核的计算天然适合二值化特征
+        if sparse:
+            inter = X @ X.T
+            row_sums = np.array(X.sum(axis=1)).flatten()
+            unions = row_sums[:, np.newaxis] + row_sums[np.newaxis, :] - inter.toarray()
+            similarity = inter.toarray() / (unions + 1e-12)
+        else:
+            inter = X @ X.T
+            row_sums = np.array(X.sum(axis=1)).flatten()
+            unions = row_sums[:, np.newaxis] + row_sums[np.newaxis, :] - inter
+            similarity = inter / (unions + 1e-12)
 
-        # Jaccard 必须返回 dense（unions 会 dense）
-        similarity = inter.toarray() / (unions + 1e-12)
-    if kernel == "rbf":
-        gamma = 0.5
-        """优化后的稀疏二值矩阵RBF核计算"""
-        # 每行1的个数（因为x^2 = x对于二值数据）
-        popcount = np.array(X.sum(axis=1)).flatten()
+    elif kernel == "rbf":
+        if sparse:
+            # 稀疏二值矩阵的优化实现
+            popcount = np.array(X.sum(axis=1)).flatten()
+            intersection = (X @ X.T).toarray()
+            dist2 = popcount[:, np.newaxis] + popcount[np.newaxis, :] - 2 * intersection
+            similarity = np.exp(-gamma * dist2)
+        else:
+            # 稠密矩阵使用sklearn的高效实现
+            similarity = rbf_kernel(X, gamma=gamma)
 
-        # 交集大小（点积）
-        intersection = (X @ X.T).toarray()
+    else:
+        raise ValueError(f"不支持的核函数类型: {kernel}")
 
-        # 平方距离
-        dist2 = popcount[:, None] + popcount[None, :] - 2 * intersection
-
-        # RBF核
-        similarity = np.exp(-gamma * dist2)
+    # 确保最终输出是稠密的numpy数组
     if sp.issparse(similarity):
         similarity = similarity.toarray()
-    assert type(similarity) == np.ndarray, "相似度矩阵必须为NumPy数组"
+
+    assert isinstance(similarity, np.ndarray), "相似度矩阵必须为NumPy数组"
     return similarity
 
 
@@ -159,6 +182,7 @@ def high_order_old(
         if density > 0.1:
             warnings.warn(f"高阶矩阵密度过高: {density:.4%}")
     return ho_matrix
+
 
 def high_order(
     term: Union[sp.csr_matrix, np.ndarray], order: int = 2, decay: float = 0.5
@@ -204,12 +228,13 @@ def high_order(
         if i < order:
             matrix_power = matrix_power @ term
 
-    # 稀疏密度检查 
+    # 稀疏密度检查
     if is_sparse:
         density = ho_matrix.nnz / (ho_matrix.shape[0] * ho_matrix.shape[1])
         if density > 0.1:
             warnings.warn(f"高阶矩阵密度过高: {density:.4%}")
     return ho_matrix
+
 
 if __name__ == "__main__":
     pass
