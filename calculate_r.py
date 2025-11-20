@@ -259,10 +259,14 @@ if __name__ == "__main__":
     li = np.load(r"precomputed\cora_li.npy")
     # 计算 r
     # 这次上传在ML_JNMF.matrixInit中用的是random随机初始化，在 154 行指定了随机化种子
-    # 如果把ML_JNMF.matrixInit中的方法改成被注释掉的内容，运行结果：
+    # 如果把ML_JNMF.matrixInit中的方法改成被注释掉的内容(即nndsvdar)，运行结果：
     # pac_values = [np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.005678391959798995), np.float64(0.0)]
-    # r = 2
-    # 但是random随机初始化的指标：[Step 3/4] Evaluation completed. Metrics: {'ACC': np.float64(0.1252), 'JC': 0.0687, 'FMI': 0.134, 'RI': np.float64(0.7564), 'ARI': -0.0001, 'NMI': 0.0049, 'Micro-F1': 0.1285, 'NorHo': np.float64(-0.0119), 'NorTi': 0.0007}
+    # r = 2 实际上是没有意义的，前几个都是0，随机性质不太好
+    # 使用random随机初始化：
+    # pac_values = [np.float64(0.8174371859296482), np.float64(0.7135175879396984), np.float64(0.644070351758794), np.float64(0.34261306532663316), np.float64(0.39276381909547736), np.float64(0.3434673366834171), np.float64(0.20236180904522613), np.float64(0.27618090452261307), np.float64(0.2399497487437186)]
+    # r = 8
+
+    # 但是random随机初始化的指标(r=8)：[Step 3/4] Evaluation completed. Metrics: {'ACC': np.float64(0.1252), 'JC': 0.0687, 'FMI': 0.134, 'RI': np.float64(0.7564), 'ARI': -0.0001, 'NMI': 0.0049, 'Micro-F1': 0.1285, 'NorHo': np.float64(-0.0119), 'NorTi': 0.0007}
     # nndsvdar初始化的指标（r=7）：{
     #     "ACC": 0.4136,
     #     "JC": 0.1852,
