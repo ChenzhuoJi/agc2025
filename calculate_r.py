@@ -258,6 +258,21 @@ if __name__ == "__main__":
     ls = np.load(r"precomputed\cora_ls.npy")
     li = np.load(r"precomputed\cora_li.npy")
     # 计算 r
-    # 这次上传在ML_JNMF.matrixInit中用的是random随机初始化，在154行指定了随机化种子
+    # 这次上传在ML_JNMF.matrixInit中用的是random随机初始化，在 154 行指定了随机化种子
+    # 如果把ML_JNMF.matrixInit中的方法改成被注释掉的内容，运行结果：
+    # pac_values = [np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.005678391959798995), np.float64(0.0)]
+    # r = 2
+    # 但是random随机初始化的指标：[Step 3/4] Evaluation completed. Metrics: {'ACC': np.float64(0.1252), 'JC': 0.0687, 'FMI': 0.134, 'RI': np.float64(0.7564), 'ARI': -0.0001, 'NMI': 0.0049, 'Micro-F1': 0.1285, 'NorHo': np.float64(-0.0119), 'NorTi': 0.0007}
+    # nndsvdar初始化的指标（r=7）：{
+    #     "ACC": 0.4136,
+    #     "JC": 0.1852,
+    #     "FMI": 0.3157,
+    #     "RI": 0.7126,
+    #     "ARI": 0.1355,
+    #     "NMI": 0.2554,
+    #     "Micro-F1": 0.3125,
+    #     "NorHo": -0.0118,
+    #     "NorTi": 0.0078
+    # },
     r = calculate_r(la, ls, li, "cora")
     print(r)
